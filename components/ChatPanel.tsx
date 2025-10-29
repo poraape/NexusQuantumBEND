@@ -1,24 +1,33 @@
-import React, { useState, useRef, useEffect } from 'react';
-import type { ChatMessage, SmartSearchResult } from '../types';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import type { ChatMessage, AuditReport } from '../types';
 import type { ExportType } from '../App';
 import { SendIcon, LoadingSpinnerIcon, StopIcon, DownloadIcon, DocumentTextIcon, PaperClipIcon } from './icons';
 import { exportConversationToDocx, exportConversationToHtml, exportConversationToPdf } from '../utils/exportConversationUtils';
-import ChatMessageContent from './ChatMessageContent'; // Import the new component
+import ChatMessageContent from './ChatMessageContent';
+import { generateSuggestedQuestions } from '../services/geminiService';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   onSendMessage: (message: string) => void;
   isStreaming: boolean;
   onStopStreaming: () => void;
-  reportTitle: string;
+  report: AuditReport;
   setError: (message: string | null) => void;
   onAddFiles: (files: File[]) => void;
 }
 
-const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStreaming, onStopStreaming, reportTitle, setError, onAddFiles }) => {
+const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStreaming, onStopStreaming, report, setError, onAddFiles }) => {
   const [input, setInput] = useState('');
   const [isExporting, setIsExporting] = useState<ExportType | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([
+    "Qual foi o produto com o maior valor total?",
+    "Resuma as principais inconsistências encontradas.",
+    "Liste os 5 principais produtos por quantidade.",
+    "Existe alguma oportunidade de otimização fiscal nos dados?",
+  ]);
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -31,8 +40,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
-  
-  // Close export menu on outside click
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (exportMenuRef.current && !exportMenuRef.current.contains(event.target as Node)) {
@@ -42,6 +50,33 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+  
+  // Efeito para gerar sugestões dinâmicas
+  useEffect(() => {
+    const generateSuggestions = async () => {
+        if (isStreaming || isGeneratingSuggestions || messages.length < 2 || messages[messages.length - 1].sender !== 'ai') {
+            return;
+        }
+
+        setIsGeneratingSuggestions(true);
+        try {
+            const lastMessages = messages.slice(-2).map(m => ({ sender: m.sender, text: m.text }));
+            const newSuggestions = await generateSuggestedQuestions(lastMessages, report.summary);
+            
+            if (newSuggestions && newSuggestions.length > 0) {
+                setSuggestedQuestions(newSuggestions);
+            }
+        } catch (error) {
+            console.error("Failed to generate dynamic suggestions:", error);
+            // Silently fail, keep old suggestions
+        } finally {
+            setIsGeneratingSuggestions(false);
+        }
+    };
+
+    generateSuggestions();
+  }, [messages, isStreaming, report, isGeneratingSuggestions]);
+
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,7 +89,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
         onAddFiles(Array.from(e.target.files));
-        e.target.value = ''; // Reset input to allow re-selection
+        e.target.value = '';
     }
   };
   
@@ -62,19 +97,13 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
     setIsExporting(type);
     setShowExportMenu(false);
     try {
-        const filename = `Conversa_Analise_Fiscal_${reportTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase()}`;
-        const title = `Conversa sobre: ${reportTitle}`;
+        const filename = `Conversa_Analise_Fiscal_${report.summary.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}`;
+        const title = `Conversa sobre: ${report.summary.title}`;
 
         switch(type) {
-            case 'docx':
-                await exportConversationToDocx(messages, title, filename);
-                break;
-            case 'html':
-                await exportConversationToHtml(messages, title, filename);
-                break;
-            case 'pdf':
-                await exportConversationToPdf(messages, title, filename);
-                break;
+            case 'docx': await exportConversationToDocx(messages, title, filename); break;
+            case 'html': await exportConversationToHtml(messages, title, filename); break;
+            case 'pdf': await exportConversationToPdf(messages, title, filename); break;
         }
 
     } catch(err) {
@@ -90,19 +119,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
       { type: 'html', label: 'HTML', icon: <span className="font-bold text-sm">H</span> },
       { type: 'pdf', label: 'PDF', icon: <span className="font-bold text-sm">P</span> },
   ];
-  
-  const suggestedQuestions = [
-    "Qual foi o produto com o maior valor total?",
-    "Resuma as principais inconsistências encontradas.",
-    "Liste os 5 principais produtos por quantidade.",
-    "Existe alguma oportunidade de otimização fiscal nos dados?",
-  ];
 
-  const handleSuggestionClick = (question: string) => {
+  const handleSuggestionClick = useCallback((question: string) => {
       setInput(question);
       chatInputRef.current?.focus();
-  };
-
+  }, []);
 
   return (
     <div className="bg-gray-800 rounded-lg shadow-lg flex flex-col h-full max-h-[calc(100vh-12rem)] animate-fade-in">
@@ -142,7 +163,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
         <div ref={messagesEndRef} />
       </div>
       <div className="p-4 border-t border-gray-700">
-        {messages.length > 1 && !isStreaming && (
+        {messages.length > 1 && !isStreaming && suggestedQuestions.length > 0 && (
             <div className="mb-3 text-center animate-fade-in">
                 <p className="text-xs text-gray-500 mb-2">Sugestões de Análise:</p>
                 <div className="flex flex-wrap gap-2 justify-center">

@@ -41,8 +41,9 @@ const MOCK_ALIQUOTAS = {
 };
 
 /**
- * [RECONSTRUÍDO] Lógica de agregação determinística inspirada no manifesto "TotalSynth Core".
- * Agora é a única fonte da verdade para o cálculo de métricas agregadas, garantindo consistência e robustez.
+ * [RECONSTRUÍDO] Executa a agregação contábil determinística.
+ * Esta função foi completamente reescrita para agrupar itens por NFe e reconstruir os totais a partir da base,
+ * corrigindo o bug crítico de valores zerados.
  * @param report O relatório de auditoria contendo todos os documentos processados.
  * @returns Um registro de métricas agregadas.
  */
@@ -67,52 +68,84 @@ const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Recor
 
     const allItems = validDocs.flatMap(d => d.doc.data!);
     
-    // [CORREÇÃO CRÍTICA] Usa um Map para somar corretamente os valores totais de NFes únicas e contá-las.
-    // Isso resolve o bug "0 Documentos Válidos" ao depender do 'nfe_id' agora extraído corretamente.
-    const uniqueNfes = new Map<string, { totalValue: number }>();
+    // Etapa 1: Agrupar todos os itens por NFe ID e agregar seus valores.
+    const nfeAggregates = new Map<string, {
+        totalProductValue: number;
+        totalICMS: number;
+        totalPIS: number;
+        totalCOFINS: number;
+        totalISS: number;
+        officialNfeTotal: number; // Armazena o total oficial, se disponível
+    }>();
+
     for (const item of allItems) {
-        if (item.nfe_id) {
-            // O `valor_total_nfe` se repete para cada item, então podemos apenas defini-lo.
-            // O Map garante que armazenamos o valor apenas uma vez por ID de NFe único.
-            uniqueNfes.set(item.nfe_id, { totalValue: parseSafeFloat(item.valor_total_nfe) });
+        const nfeId = item.nfe_id;
+        if (!nfeId) continue; // Pula itens sem um link claro com a NFe
+
+        if (!nfeAggregates.has(nfeId)) {
+            nfeAggregates.set(nfeId, {
+                totalProductValue: 0,
+                totalICMS: 0,
+                totalPIS: 0,
+                totalCOFINS: 0,
+                totalISS: 0,
+                officialNfeTotal: 0,
+            });
+        }
+
+        const currentNfe = nfeAggregates.get(nfeId)!;
+        currentNfe.totalProductValue += parseSafeFloat(item.produto_valor_total);
+        currentNfe.totalICMS += parseSafeFloat(item.produto_valor_icms);
+        currentNfe.totalPIS += parseSafeFloat(item.produto_valor_pis);
+        currentNfe.totalCOFINS += parseSafeFloat(item.produto_valor_cofins);
+        currentNfe.totalISS += parseSafeFloat(item.produto_valor_iss);
+        
+        // Usa o total oficial da NFe do primeiro item que o tiver. Deve ser o mesmo para todos os itens.
+        if (currentNfe.officialNfeTotal === 0) {
+            currentNfe.officialNfeTotal = parseSafeFloat(item.valor_total_nfe);
         }
     }
-    
-    let totalNfeValue = Array.from(uniqueNfes.values()).reduce((sum, nfe) => sum + nfe.totalValue, 0);
-    
-    const totals = allItems.reduce((acc, item) => {
-        acc.totalProductValue += parseSafeFloat(item.produto_valor_total);
-        acc.totalICMS += parseSafeFloat(item.produto_valor_icms);
-        acc.totalPIS += parseSafeFloat(item.produto_valor_pis);
-        acc.totalCOFINS += parseSafeFloat(item.produto_valor_cofins);
-        acc.totalISS += parseSafeFloat(item.produto_valor_iss);
-        return acc;
-    }, { totalProductValue: 0, totalICMS: 0, totalPIS: 0, totalCOFINS: 0, totalISS: 0 });
 
-    // --- [TotalSynth] Lógica de Fallback ---
-    // Se o valor total oficial da NFe ainda for zero, mas houver valores de produtos,
-    // reconstrói o total como uma medida de segurança.
-    if (totalNfeValue === 0 && totals.totalProductValue > 0) {
-        logger.log('AccountantAgent', 'WARN', '[TotalSynth] Valor total da NFe é zero. Reconstruindo a partir da soma dos componentes como fallback.');
-        totalNfeValue = totals.totalProductValue + totals.totalICMS + totals.totalPIS + totals.totalCOFINS + totals.totalISS;
+    // Etapa 2: Calcular os totais gerais a partir dos agregados por NFe.
+    let grandTotalNfeValue = 0;
+    let grandTotalProductValue = 0;
+    let grandTotalICMS = 0;
+    let grandTotalPIS = 0;
+    let grandTotalCOFINS = 0;
+    let grandTotalISS = 0;
+
+    for (const nfe of nfeAggregates.values()) {
+        const reconstructedTotal = nfe.totalProductValue + nfe.totalICMS + nfe.totalPIS + nfe.totalCOFINS + nfe.totalISS;
+        // Usa o total oficial se disponível e parecer correto (próximo da soma dos itens), senão, reconstrói.
+        if (nfe.officialNfeTotal > 0 && Math.abs(nfe.officialNfeTotal - reconstructedTotal) < 0.02) { // Permite diferença de arredondamento de 2 centavos
+             grandTotalNfeValue += nfe.officialNfeTotal;
+        } else {
+             grandTotalNfeValue += reconstructedTotal;
+        }
+        
+        grandTotalProductValue += nfe.totalProductValue;
+        grandTotalICMS += nfe.totalICMS;
+        grandTotalPIS += nfe.totalPIS;
+        grandTotalCOFINS += nfe.totalCOFINS;
+        grandTotalISS += nfe.totalISS;
     }
 
-    const totalIVA = (totals.totalPIS + totals.totalCOFINS) * MOCK_ALIQUOTAS.IVA;
+    const totalIVA = (grandTotalPIS + grandTotalCOFINS) * MOCK_ALIQUOTAS.IVA;
 
     const metrics: Record<string, string | number> = {
-        'Número de Documentos Válidos': uniqueNfes.size, // Conta corretamente as NFes únicas
-        'Valor Total das NFes': formatCurrency(totalNfeValue),
-        'Valor Total dos Produtos': formatCurrency(totals.totalProductValue),
+        'Número de Documentos Válidos': nfeAggregates.size, // Conta corretamente as NFes únicas com itens
+        'Valor Total das NFes': formatCurrency(grandTotalNfeValue),
+        'Valor Total dos Produtos': formatCurrency(grandTotalProductValue),
         'Total de Itens Processados': allItems.length,
-        'Valor Total de ICMS': formatCurrency(totals.totalICMS),
-        'Valor Total de PIS': formatCurrency(totals.totalPIS),
-        'Valor Total de COFINS': formatCurrency(totals.totalCOFINS),
-        'Valor Total de ISS': formatCurrency(totals.totalISS),
+        'Valor Total de ICMS': formatCurrency(grandTotalICMS),
+        'Valor Total de PIS': formatCurrency(grandTotalPIS),
+        'Valor Total de COFINS': formatCurrency(grandTotalCOFINS),
+        'Valor Total de ISS': formatCurrency(grandTotalISS),
         'Estimativa de IVA (Simulado)': formatCurrency(totalIVA),
     };
     
-    if (totalNfeValue === 0 && allItems.length > 0) {
-        metrics['Alerta de Qualidade'] = 'O valor total das NFes processadas é zero, mesmo após as tentativas de reconstrução. Isso indica problemas graves nos dados de origem.';
+    if (grandTotalNfeValue === 0 && allItems.length > 0) {
+        metrics['Alerta de Qualidade'] = 'O valor total das NFes processadas é zero. Isso indica problemas graves nos dados de origem.';
     }
 
     return metrics;

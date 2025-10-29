@@ -1,7 +1,15 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { ChatMessage, AuditReport, ClassificationResult, AgentName, AgentProgress, AgentState, AgentStates } from '../types';
+import type { Chat } from '@google/genai';
+import type { ChatMessage, AuditReport, ClassificationResult, AgentStates } from '../types';
 import { logger } from '../services/logger';
-import { apiClient } from '../services/apiClient'; // Importa o novo cliente de API
+import { importFiles } from '../utils/importPipeline';
+import { runAudit } from '../agents/auditorAgent';
+import { runClassification } from '../agents/classifierAgent';
+import { runIntelligenceAnalysis } from '../agents/intelligenceAgent';
+import { runAccountingAnalysis } from '../agents/accountantAgent';
+import { runDeterministicCrossValidation } from '../utils/fiscalCompare';
+import { startChat } from '../services/chatService';
+
 
 const initialAgentStates: AgentStates = {
     ocr: { status: 'pending', progress: { step: 'Aguardando arquivos', current: 0, total: 0 } },
@@ -18,24 +26,15 @@ const getDetailedErrorMessage = (error: unknown): string => {
     logger.log('ErrorHandler', 'ERROR', 'Analisando erro da aplicação.', { error });
 
     if (error instanceof Error) {
-        if (error.name === 'TypeError' && error.message.toLowerCase().includes('failed to fetch')) {
-            return 'Falha de conexão. Verifique sua internet ou possíveis problemas de CORS.';
-        }
         const message = error.message.toLowerCase();
         if (message.includes('api key not valid')) return 'Chave de API inválida. Verifique sua configuração.';
         if (message.includes('quota')) return 'Cota da API excedida. Por favor, tente novamente mais tarde.';
-        if (message.includes('400')) return 'Requisição inválida para a API. Verifique os dados enviados.';
-        if (message.includes('401') || message.includes('permission denied')) return 'Não autorizado. Verifique sua chave de API e permissões.';
-        if (message.includes('429')) return 'Muitas requisições. Por favor, aguarde e tente novamente.';
-        if (message.includes('500') || message.includes('503')) return 'O serviço de IA está indisponível ou com problemas. Tente novamente mais tarde.';
+        if (error.name.includes('Google')) {
+            return `Erro na comunicação com a IA: ${error.message}`;
+        }
         return error.message;
     }
     if (typeof error === 'string') return error;
-    if (typeof error === 'object' && error !== null) {
-        const errorObj = error as Record<string, unknown>;
-        if (typeof errorObj.message === 'string') return errorObj.message;
-        if (typeof errorObj.status === 'number') return `Ocorreu um erro de rede ou API com o status: ${errorObj.status}.`;
-    }
     return 'Ocorreu um erro desconhecido durante a operação.';
 };
 
@@ -44,15 +43,13 @@ export const useAgentOrchestrator = () => {
     const [agentStates, setAgentStates] = useState<AgentStates>(initialAgentStates);
     const [auditReport, setAuditReport] = useState<AuditReport | null>(null);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
-    const [isStreaming, setIsStreaming] = useState(false); // Usado para indicar que o chat está aguardando resposta
+    const [isStreaming, setIsStreaming] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [pipelineError, setPipelineError] = useState<boolean>(false);
     const [isPipelineComplete, setIsPipelineComplete] = useState(false);
     const [classificationCorrections, setClassificationCorrections] = useState<Record<string, ClassificationResult['operationType']>>({});
-
-    const [taskId, setTaskId] = useState<string | null>(null);
-    const pollingIntervalRef = useRef<number | null>(null);
-    const chatSessionIdRef = useRef<string | null>(null);
+    
+    const chatSessionRef = useRef<Chat | null>(null);
     
     useEffect(() => {
         try {
@@ -65,89 +62,82 @@ export const useAgentOrchestrator = () => {
         }
     }, []);
 
-    const stopPolling = useCallback(() => {
-        if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-        }
-    }, []);
-    
     const reset = useCallback(() => {
-        stopPolling();
-        setTaskId(null);
-        chatSessionIdRef.current = null;
+        chatSessionRef.current = null;
         setAgentStates(initialAgentStates);
         setError(null);
         setPipelineError(false);
         setAuditReport(null);
         setMessages([]);
         setIsPipelineComplete(false);
-    }, [stopPolling]);
-
-    // Efeito para polling do status do backend
-    useEffect(() => {
-        if (!taskId) return;
-
-        pollingIntervalRef.current = window.setInterval(async () => {
-            try {
-                const statusResponse = await apiClient.getAnalysisStatus(taskId);
-                setAgentStates(statusResponse.progress);
-
-                if (statusResponse.status === 'COMPLETE' && statusResponse.reportUrl) {
-                    stopPolling();
-                    logger.log('Orchestrator', 'INFO', 'Pipeline concluído no backend. Buscando relatório final.');
-                    const finalReport = await apiClient.getAnalysisReport(statusResponse.reportUrl);
-                    setAuditReport(finalReport);
-                    
-                    const chatSession = await apiClient.startChatSession(finalReport);
-                    chatSessionIdRef.current = chatSession.sessionId;
-                    setMessages([
-                        {
-                            id: 'initial-ai-message',
-                            sender: 'ai',
-                            text: 'Sua análise fiscal (processada no backend) está pronta. Explore os detalhes ou me faça uma pergunta.',
-                        },
-                    ]);
-                    setIsPipelineComplete(true);
-
-                } else if (statusResponse.status === 'ERROR') {
-                    stopPolling();
-                    const errorMessage = getDetailedErrorMessage(statusResponse.error || 'Erro no processamento do backend.');
-                    setError(errorMessage);
-                    setPipelineError(true);
-                    setIsPipelineComplete(true);
-                }
-            } catch (err) {
-                stopPolling();
-                const errorMessage = getDetailedErrorMessage(err);
-                setError(errorMessage);
-                setPipelineError(true);
-                setIsPipelineComplete(true);
-            }
-        }, 2000); // Polling a cada 2 segundos
-
-        return () => stopPolling();
-    }, [taskId, stopPolling]);
+    }, []);
 
     const runPipeline = useCallback(async (files: File[]) => {
         reset();
-        logger.log('Orchestrator', 'INFO', 'Iniciando pipeline via API do backend.');
-        setAgentStates(prev => ({ ...prev, ocr: { ...prev.ocr, status: 'running', progress: { step: 'Enviando arquivos...', current: 0, total: files.length }}}));
+        logger.log('Orchestrator', 'INFO', 'Iniciando pipeline de análise no frontend.');
+        
         try {
-            const { taskId: newTaskId } = await apiClient.startAnalysis(files);
-            setTaskId(newTaskId); // Dispara o useEffect de polling
-        } catch(err) {
+            // Etapa 1: Importação e OCR
+            setAgentStates(prev => ({ ...prev, ocr: { status: 'running', progress: { step: 'Analisando arquivos...', current: 0, total: files.length }}}));
+            const importedDocs = await importFiles(files, (current, total) => {
+                setAgentStates(prev => ({...prev, ocr: { ...prev.ocr, progress: { step: `Processando arquivo ${current} de ${total}`, current, total }}}));
+            });
+            setAgentStates(prev => ({...prev, ocr: { status: 'completed', progress: { step: `Arquivos importados`, current: files.length, total: files.length }}}));
+            
+            // Etapa 2: Auditoria Determinística
+            setAgentStates(prev => ({...prev, auditor: { status: 'running', progress: { step: `Executando ${importedDocs.length} auditorias...`, current: 0, total: 1 }}}));
+            let partialReport: any = await runAudit(importedDocs);
+            setAgentStates(prev => ({...prev, auditor: { status: 'completed', progress: { step: `Auditoria concluída`, current: 1, total: 1 }}}));
+
+            // Etapa 3: Classificação Heurística
+            setAgentStates(prev => ({...prev, classifier: { status: 'running', progress: { step: `Classificando ${partialReport.documents.length} documentos...`, current: 0, total: 1 }}}));
+            partialReport = await runClassification(partialReport, classificationCorrections);
+            setAgentStates(prev => ({...prev, classifier: { status: 'completed', progress: { step: `Classificação concluída`, current: 1, total: 1 }}}));
+
+            // Etapa 4: Validação Cruzada Determinística
+            setAgentStates(prev => ({...prev, crossValidator: { status: 'running', progress: { step: `Comparando documentos...`, current: 0, total: 1 }}}));
+            const deterministicCVResults = await runDeterministicCrossValidation(partialReport);
+            partialReport.deterministicCrossValidation = deterministicCVResults;
+            setAgentStates(prev => ({...prev, crossValidator: { status: 'completed', progress: { step: `Comparação concluída`, current: 1, total: 1 }}}));
+            
+            // Etapa 5: Inteligência (IA)
+            setAgentStates(prev => ({...prev, intelligence: { status: 'running', progress: { step: `Análise com IA...`, current: 0, total: 1 }}}));
+            const aiResults = await runIntelligenceAnalysis(partialReport);
+            partialReport.aiDrivenInsights = aiResults.aiDrivenInsights;
+            partialReport.crossValidationResults = aiResults.crossValidationResults;
+            setAgentStates(prev => ({...prev, intelligence: { status: 'completed', progress: { step: `Análise com IA concluída`, current: 1, total: 1 }}}));
+            
+            // Etapa 6: Contabilidade (Sumarização final com IA)
+            setAgentStates(prev => ({...prev, accountant: { status: 'running', progress: { step: `Gerando sumário executivo...`, current: 0, total: 1 }}}));
+            const finalReport = await runAccountingAnalysis(partialReport);
+            setAgentStates(prev => ({...prev, accountant: { status: 'completed', progress: { step: `Relatório finalizado`, current: 1, total: 1 }}}));
+
+            setAuditReport(finalReport);
+            setIsPipelineComplete(true);
+
+            // Inicia o chat
+            const allItems = finalReport.documents
+                .filter(d => d.status !== 'ERRO' && d.doc.data)
+                .flatMap(d => d.doc.data!);
+            
+            const { default: Papa } = await import('papaparse');
+            const dataSampleForChat = allItems.length > 0 ? Papa.unparse(allItems.slice(0, 200)) : "Nenhum dado de item válido foi encontrado.";
+            chatSessionRef.current = startChat(dataSampleForChat, finalReport.aggregatedMetrics);
+
+            setMessages([{ id: 'initial-ai-message', sender: 'ai', text: 'Sua análise fiscal está pronta. Explore os detalhes ou me faça uma pergunta.' }]);
+        
+        } catch (err) {
             const errorMessage = getDetailedErrorMessage(err);
             setError(errorMessage);
             setPipelineError(true);
             setIsPipelineComplete(true);
-            setAgentStates(initialAgentStates);
+            setAgentStates(initialAgentStates); // Reset states on failure
         }
-    }, [reset]);
+    }, [reset, classificationCorrections]);
 
     const handleSendMessage = useCallback(async (message: string) => {
-        if (!chatSessionIdRef.current) {
-            setError('A sessão de chat não foi inicializada pelo backend.');
+        if (!chatSessionRef.current) {
+            setError('A sessão de chat não foi inicializada.');
             return;
         }
 
@@ -156,8 +146,21 @@ export const useAgentOrchestrator = () => {
         setIsStreaming(true);
 
         try {
-            const aiResponse = await apiClient.sendMessageToChat(chatSessionIdRef.current, message);
-            setMessages(prev => [...prev, aiResponse]);
+            const response = await chatSessionRef.current.sendMessage({ message });
+            const responseText = response.text;
+            
+            if (!responseText) throw new Error("A IA retornou uma resposta vazia.");
+            
+            const parsedResponse = JSON.parse(responseText);
+            
+            const aiMessage: ChatMessage = {
+                id: (Date.now() + 1).toString(),
+                sender: 'ai',
+                text: parsedResponse.text,
+                chartData: parsedResponse.chartData || undefined
+            };
+            setMessages(prev => [...prev, aiMessage]);
+
         } catch (err) {
             const finalMessage = getDetailedErrorMessage(err);
             setError(finalMessage);
@@ -166,7 +169,7 @@ export const useAgentOrchestrator = () => {
         }
     }, []);
 
-    const handleClassificationChange = useCallback(async (docName: string, newClassification: ClassificationResult['operationType']) => {
+    const handleClassificationChange = useCallback((docName: string, newClassification: ClassificationResult['operationType']) => {
         setAuditReport(prevReport => {
             if (!prevReport) return null;
             const updatedDocs = prevReport.documents.map(doc => {
@@ -185,23 +188,10 @@ export const useAgentOrchestrator = () => {
         } catch(e) {
             logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção no localStorage.`, { error: e });
         }
+    }, [classificationCorrections]);
 
-        if (!taskId) {
-            setError('Não é possível salvar a correção no backend: ID da análise não encontrado.');
-            return;
-        }
-        try {
-            await apiClient.updateClassification(taskId, docName, newClassification);
-            logger.log('Orchestrator', 'INFO', `Correção para '${docName}' enviada ao backend com sucesso.`);
-        } catch (err) {
-            const errorMessage = getDetailedErrorMessage(err);
-            setError(`Falha ao salvar a correção no backend: ${errorMessage}`);
-        }
-    }, [classificationCorrections, taskId]);
-
-    // A função de parar streaming não é mais aplicável neste modelo de request/response
     const handleStopStreaming = useCallback(() => {
-        logger.log('Orchestrator', 'WARN', 'A parada de streaming não é suportada na arquitetura de backend.');
+        logger.log('Orchestrator', 'WARN', 'A parada de streaming não é suportada na arquitetura atual.');
     }, []);
 
     return {
@@ -211,7 +201,7 @@ export const useAgentOrchestrator = () => {
         messages,
         isStreaming,
         error: error,
-        isPipelineRunning: !!taskId && !isPipelineComplete,
+        isPipelineRunning: !isPipelineComplete && Object.values(agentStates).some(s => s.status === 'running'),
         isPipelineComplete,
         pipelineError,
         runPipeline,

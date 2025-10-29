@@ -1,14 +1,14 @@
-# Nexus QuantumI2A2: Análise Fiscal com IA
+# Nexus QuantumI2A2: Análise Fiscal com IA (Frontend-Only)
 
-**Nexus QuantumI2A2** é uma Single Page Application (SPA) de análise fiscal interativa que processa dados de Notas Fiscais Eletrônicas (NFe) e gera insights acionáveis através de um sistema de IA que simula múltiplos agentes especializados.
+**Nexus QuantumI2A2** é uma Single Page Application (SPA) de análise fiscal interativa que processa dados de Notas Fiscais Eletrônicas (NFe) e gera insights acionáveis através de um sistema de IA que simula múltiplos agentes especializados, **executando integralmente no navegador do cliente**.
 
-Esta aplicação demonstra uma arquitetura cliente-servidor robusta, onde o processamento pesado de dados é delegado a um backend assíncrono, enquanto o frontend foca em prover uma experiência de usuário rica e interativa.
+Esta aplicação demonstra uma arquitetura moderna frontend-only, onde o processamento de dados e as chamadas para a IA são gerenciados diretamente pelo cliente, garantindo privacidade, menor latência e uma infraestrutura simplificada.
 
 ---
 
 ## ✨ Funcionalidades Principais
 
-*   **Pipeline Multiagente no Backend:** Uma cadeia de agentes especializados (Importação/OCR, Auditor, Classificador, Agente de Inteligência, Contador) processa os arquivos em etapas de forma assíncrona.
+*   **Pipeline Multiagente no Cliente:** Uma cadeia de agentes especializados (Importação/OCR, Auditor, Classificador, Agente de Inteligência, Contador) processa os arquivos em etapas, de forma assíncrona, no navegador.
 *   **Upload Flexível de Arquivos:** Suporte para múltiplos formatos, incluindo `XML`, `CSV`, `XLSX`, `PDF`, imagens (`PNG`, `JPG`) e arquivos `.ZIP` contendo múltiplos documentos.
 *   **Análise Fiscal Aprofundada por IA:** Geração de um relatório detalhado com:
     *   **Resumo Executivo e Recomendações Estratégicas** gerados por IA.
@@ -22,76 +22,57 @@ Esta aplicação demonstra uma arquitetura cliente-servidor robusta, onde o proc
 
 ---
 
-## 🏗️ Arquitetura: Cliente-Servidor com Processamento Assíncrono
+## 🏗️ Arquitetura: Frontend-Only com Agentes Assíncronos
 
-A aplicação utiliza uma arquitetura cliente-servidor moderna para garantir escalabilidade, segurança e uma experiência de usuário responsiva. O processamento pesado de dados e as interações com a IA são delegados a um backend assíncrono, enquanto o frontend foca em fornecer uma interface rica e interativa.
+A aplicação opera de forma autônoma no navegador, orquestrando tarefas complexas sem a necessidade de um backend dedicado.
 
-### Frontend (Esta Aplicação)
-
-A aplicação é uma SPA desenvolvida com **React** e **TypeScript**, utilizando **TailwindCSS** para estilização. Ela é responsável por:
-*   Fornecer uma interface de usuário rica e interativa para upload de arquivos e visualização de relatórios.
-*   Comunicar-se com o backend via API REST para iniciar análises e obter resultados.
-*   Gerenciar o estado da aplicação, incluindo o progresso das tarefas em background através de polling.
-*   Renderizar dashboards, relatórios e o assistente de chat com os dados processados pelo backend.
-
-### Backend (Serviço Separado)
-
-O backend é construído com **Python/FastAPI** e utiliza **Celery** com **RabbitMQ** e **Redis** para executar um pipeline de análise assíncrono e robusto. Suas responsabilidades incluem:
-*   **API (FastAPI):** Expor endpoints REST para o frontend, gerenciar o ciclo de vida das tarefas e servir os resultados. A API implementa um **middleware CORS** para permitir a comunicação segura com o frontend.
-*   **Workers Assíncronos (Celery):** Executar o pipeline de agentes (OCR, Auditoria, Classificação, etc.) em background, permitindo que a API responda imediatamente.
-*   **Interação com a IA:** Todas as chamadas para a Google Gemini API são centralizadas no backend, protegendo as chaves de API e permitindo um gerenciamento de custos mais eficaz.
-*   **Orquestração de Agentes:** Gerenciar o fluxo de trabalho complexo entre os diferentes agentes de análise, garantindo que os dados sejam processados de forma sequencial e resiliente.
-
----
-
-## ✅ Qualidade e Automação (Metas de Produção)
-
-O projeto adere a um rigoroso padrão de qualidade, imposto por automação no pipeline de CI/CD:
-
-*   **Spec-as-Tests:** Testes de aceitação são derivados diretamente das especificações funcionais. Um conjunto de requisitos críticos **deve passar 100%** para que o deploy seja autorizado.
-*   **CI/CD Gates:** O pipeline de integração contínua possui gates de qualidade automáticos, incluindo:
-    *   **Cobertura de Testes:** Mínimo de 85%.
-    *   **Testes de Performance:** Verificação de latência (P95 < 1200ms) e taxa de erro (< 2%) com k6.
-    *   **Análise de Segurança:** Verificação de vulnerabilidades estáticas e de dependências.
-*   **AutoFix:** Capacidade de utilizar IA para diagnosticar e propor correções para testes que falham, acelerando o ciclo de desenvolvimento.
+*   **Orquestração de Agentes (React Hooks):** O hook `useAgentOrchestrator` atua como o cérebro da aplicação, executando o pipeline de análise de forma sequencial e assíncrona. Isso garante que a interface do usuário permaneça responsiva mesmo durante o processamento de arquivos pesados.
+*   **Processamento de Dados no Cliente:** Bibliotecas de alta performance são utilizadas para manipular arquivos diretamente no navegador:
+    *   **Parsing:** `pdfjs-dist`, `xlsx`, `fast-xml-parser` e `jszip` para ler e extrair dados de diversos formatos.
+    *   **OCR:** `tesseract.js` para extrair texto de PDFs baseados em imagem e outros formatos de imagem.
+*   **Inteligência Artificial Direta:** As interações com a IA são feitas através do SDK oficial `@google/genai`, que se comunica diretamente dos clientes para a API do Google Gemini. A chave de API é gerenciada de forma segura como uma variável de ambiente.
+*   **Gerenciamento de Estado:** O estado da aplicação, incluindo o progresso da análise, relatórios e conversas, é gerenciado inteiramente pelo React, garantindo uma renderização eficiente e reativa.
 
 ---
 
 ## 🚀 Execução do Projeto
 
 ### No AI Studio
-1.  **Execute o Backend:** Siga as instruções no arquivo `backend/README.md` para iniciar os serviços do backend com Docker Compose.
-2.  **Execute o Frontend:** Clique no botão "Run" ou "Executar" no AI Studio para o projeto do frontend.
-3.  Uma nova aba será aberta com a aplicação em funcionamento, pronta para se comunicar com o backend em `http://localhost:8000`.
+1.  **Configure a Chave de API:** Certifique-se de que sua chave de API do Google Gemini está configurada corretamente nas variáveis de ambiente do projeto.
+2.  **Execute o Frontend:** Clique no botão "Run" ou "Executar".
+3.  Uma nova aba será aberta com a aplicação em funcionamento. Como não há backend, ela está pronta para uso imediato.
 
 ### Localmente
 1.  **Clone o repositório.**
-2.  **Execute o Backend:** Siga as instruções no `backend/README.md` para iniciar o ambiente Docker.
-3.  **Inicie o Servidor de Desenvolvimento do Frontend (ex: com Vite):**
+2.  **Configure as Variáveis de Ambiente:** Crie um arquivo `.env` na raiz e adicione sua chave de API:
+    ```sh
+    # .env
+    # Se estiver usando Vite
+    VITE_GOOGLE_API_KEY=SUA_CHAVE_DE_API_AQUI
+    ```
+3.  **Inicie um Servidor de Desenvolvimento:**
    ```bash
-   # Navegue até a pasta do frontend
-   # Instale as dependências (se houver um package.json)
+   # Instale as dependências
    npm install
    # Inicie o servidor
    npm run dev
    ```
-4.  Acesse a URL do frontend fornecida (geralmente `http://localhost:5173`).
+4.  Acesse a URL fornecida (geralmente `http://localhost:5173`).
 
 ---
 
-## 📁 Estrutura de Pastas (Frontend)
+## 📁 Estrutura de Pastas
 
 ```
 /
 ├── src/
-│   ├── agents/            # Lógica de negócios de cada agente IA (legado, agora no backend)
+│   ├── agents/            # Lógica de negócios de cada agente IA
 │   ├── components/        # Componentes React reutilizáveis
 │   ├── hooks/             # Hooks React customizados (ex: useAgentOrchestrator)
-│   ├── services/          # Serviços (chamadas à API do backend, logger)
+│   ├── services/          # Serviços (chamadas à API Gemini, logger)
 │   ├── utils/             # Funções utilitárias (parsers, exportação, regras)
 │   ├── App.tsx            # Componente principal da aplicação
 │   └── types.ts           # Definições de tipos TypeScript
-├── backend/               # Código-fonte e configuração do backend FastAPI/Celery
 ├── index.html             # Arquivo HTML principal
 └── README.md              # Este arquivo
 ```

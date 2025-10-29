@@ -212,7 +212,7 @@ const App: React.FC = () => {
                                 onSendMessage={handleSendMessage}
                                 isStreaming={isStreaming}
                                 onStopStreaming={handleStopStreaming}
-                                reportTitle={auditReport.summary.title}
+                                report={auditReport}
                                 setError={setError}
                                 onAddFiles={handleIncrementalUpload}
                             />
