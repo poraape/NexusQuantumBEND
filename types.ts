@@ -164,4 +164,5 @@ export interface AuditReport {
   aiDrivenInsights?: AIDrivenInsight[];
   crossValidationResults?: CrossValidationResult[];
   deterministicCrossValidation?: DeterministicCrossValidationResult[];
+  rawData?: any; // To hold the raw data from the uploaded file
 }
