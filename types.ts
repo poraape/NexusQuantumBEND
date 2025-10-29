@@ -138,6 +138,7 @@ export interface CrossValidationResult {
 export interface SmartSearchResult {
     summary: string;
     data?: string[][]; // Optional structured data for a table
+    references?: string[];
 }
 
 export interface DeterministicDiscrepancy {

@@ -2,133 +2,107 @@
 import type { AgentStates, AuditReport, ChatMessage, ClassificationResult } from '../types';
 import { logger } from './logger';
 
-const initialAgentStates: AgentStates = {
-    ocr: { status: 'pending', progress: { step: 'Aguardando arquivos', current: 0, total: 0 } },
-    auditor: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
-    classifier: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
-    crossValidator: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
-    intelligence: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
-    accountant: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
-};
+const BASE_URL = 'http://localhost:8000';
 
-// Um relatório mock para quando o pipeline for concluído com sucesso
-const MOCK_SUCCESS_REPORT: AuditReport = {
-    summary: {
-        title: "Análise Fiscal Simulada (Backend)",
-        summary: "Esta análise foi gerada por um backend simulado para demonstrar a nova arquitetura cliente-servidor. A orquestração e o processamento pesado agora ocorrem no servidor, garantindo escalabilidade e segurança.",
-        keyMetrics: [
-            { metric: "Documentos Válidos", value: "1 (Mock)", insight: "Processado com sucesso via API." },
-            { metric: "Valor Total das NFes", value: "R$ 352.046,81", insight: "Calculado de forma robusta no backend." },
-            { metric: "Inconsistências Graves", value: "2 (Mock)", insight: "Detectadas pelo motor de regras do servidor." }
-        ],
-        actionableInsights: ["A migração para o backend foi um sucesso, desbloqueando análises mais complexas.", "Monitore a latência da API para garantir a performance e a experiência do usuário."],
-        strategicRecommendations: ["Evoluir os microserviços dos agentes de forma independente para facilitar a manutenção.", "Implementar um dashboard de monitoramento para a saúde dos workers do backend."]
-    },
-    documents: [], // Em um caso real, os documentos auditados seriam incluídos aqui
-    aggregatedMetrics: { 'Valor Total das NFes': "R$ 352.046,81" },
-};
+/**
+ * A wrapper around fetch for making API calls to the backend.
+ * Handles common tasks like setting headers, checking for errors, and parsing JSON.
+ * @param url The full URL for the request.
+ * @param options The standard fetch options object.
+ * @returns The JSON response from the API.
+ */
+async function apiFetch(url: string, options: RequestInit = {}): Promise<any> {
+    try {
+        const response = await fetch(url, {
+            ...options,
+            headers: {
+                'Accept': 'application/json',
+                ...options.headers,
+            },
+        });
+
+        if (!response.ok) {
+            let errorData;
+            try {
+                errorData = await response.json();
+            } catch (e) {
+                throw new Error(response.statusText || `Erro de rede: ${response.status}`);
+            }
+            const errorMessage = errorData.detail || JSON.stringify(errorData) || response.statusText;
+            throw new Error(errorMessage);
+        }
+
+        if (response.status === 204 || response.headers.get('content-length') === '0') {
+            return null;
+        }
+
+        return await response.json();
+    } catch (error) {
+        logger.log('ApiClient', 'ERROR', `Falha na requisição para ${url}`, { error });
+        // Re-throw the error so it can be caught by the calling function (e.g., in the orchestrator hook)
+        throw error;
+    }
+}
 
 
-class MockApiClient {
-    private taskId: string | null = null;
-    private startTime: number | null = null;
-    private readonly pipelineDuration = 8000; // 8 segundos de duração total do pipeline
-
+class ApiClient {
     async startAnalysis(files: File[]): Promise<{ taskId: string }> {
-        logger.log('ApiClient', 'INFO', `[MOCK] Iniciando análise para ${files.length} arquivos.`);
-        this.taskId = `task-${Date.now()}`;
-        this.startTime = Date.now();
-        return new Promise(resolve => {
-            setTimeout(() => resolve({ taskId: this.taskId! }), 500); // Simula a latência do upload
+        logger.log('ApiClient', 'INFO', `Iniciando análise para ${files.length} arquivos via backend.`);
+        const formData = new FormData();
+        files.forEach(file => {
+            // The backend expects a list of files under the key 'files'
+            formData.append('files', file);
+        });
+
+        // For FormData, the browser sets the 'Content-Type' with the correct boundary.
+        // Do not set it manually.
+        return apiFetch(`${BASE_URL}/analysis`, {
+            method: 'POST',
+            body: formData,
         });
     }
 
     async getAnalysisStatus(taskId: string): Promise<{ status: 'PENDING' | 'PROCESSING' | 'COMPLETE' | 'ERROR', progress: AgentStates, reportUrl?: string, error?: string }> {
-        if (taskId !== this.taskId || !this.startTime) {
-            const errorMsg = 'Task ID inválido ou não iniciado.';
-            logger.log('ApiClient', 'ERROR', `[MOCK] ${errorMsg}`);
-            // FIX: The consuming code expects a resolved promise with an error status, not a rejected promise.
-            // Changed from Promise.reject to Promise.resolve and provided the full object required by the type signature.
-            return Promise.resolve({
-                status: 'ERROR',
-                progress: initialAgentStates,
-                error: errorMsg
-            });
-        }
-
-        const elapsedTime = Date.now() - this.startTime;
-        const progressPercentage = Math.min(elapsedTime / this.pipelineDuration, 1);
-        
-        const agentSteps: (keyof AgentStates)[] = ['ocr', 'auditor', 'classifier', 'crossValidator', 'intelligence', 'accountant'];
-        const currentStepIndex = Math.floor(progressPercentage * agentSteps.length);
-
-        const newProgress: AgentStates = JSON.parse(JSON.stringify(initialAgentStates));
-
-        for (let i = 0; i < agentSteps.length; i++) {
-            const agentName = agentSteps[i];
-            if (i < currentStepIndex) {
-                newProgress[agentName].status = 'completed';
-            } else if (i === currentStepIndex && progressPercentage < 1) {
-                newProgress[agentName].status = 'running';
-                newProgress[agentName].progress = { step: `Processando no backend...`, current: 1, total: 1 };
-            } else {
-                 newProgress[agentName].status = 'pending';
-            }
-        }
-        
-        if (progressPercentage >= 1) {
-             logger.log('ApiClient', 'INFO', `[MOCK] Análise ${taskId} concluída.`);
-             Object.values(newProgress).forEach(s => s.status = 'completed');
-             return Promise.resolve({
-                 status: 'COMPLETE',
-                 progress: newProgress,
-                 reportUrl: `/api/reports/${taskId}`
-             });
-        }
-
-        return Promise.resolve({
-            status: 'PROCESSING',
-            progress: newProgress,
-        });
+        // No logging here to avoid flooding logs during polling
+        return apiFetch(`${BASE_URL}/analysis/${taskId}/status`);
     }
     
     async getAnalysisReport(reportUrl: string): Promise<AuditReport> {
-        logger.log('ApiClient', 'INFO', `[MOCK] Buscando relatório de ${reportUrl}.`);
-        return new Promise(resolve => {
-            setTimeout(() => resolve(MOCK_SUCCESS_REPORT), 300); // Simula latência de busca
-        });
+        // The reportUrl from the status endpoint might be a relative path (e.g., /api/reports/task-...)
+        const fullUrl = reportUrl.startsWith('http') ? reportUrl : `${BASE_URL}${reportUrl}`;
+        logger.log('ApiClient', 'INFO', `Buscando relatório de ${fullUrl}.`);
+        return apiFetch(fullUrl);
     }
 
     async startChatSession(report: AuditReport): Promise<{ sessionId: string }> {
-        logger.log('ApiClient', 'INFO', `[MOCK] Iniciando sessão de chat para o relatório "${report.summary.title}".`);
-        return Promise.resolve({ sessionId: `session-${Date.now()}` });
+        logger.log('ApiClient', 'INFO', `Iniciando sessão de chat para o relatório "${report.summary.title}".`);
+        return apiFetch(`${BASE_URL}/chat/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(report),
+        });
     }
 
     async sendMessageToChat(sessionId: string, message: string): Promise<ChatMessage> {
-        logger.log('ApiClient', 'INFO', `[MOCK] Enviando mensagem para a sessão ${sessionId}: "${message}"`);
-        
-        let responseText = `Esta é uma resposta simulada do backend para a sua pergunta: "${message}". A lógica real da IA agora reside no servidor.`;
-        if (message.toLowerCase().includes('produto')) {
-            responseText = "Resposta do backend: O produto com maior valor foi o 'PROCESSADOR QUÂNTICO I2A2', conforme calculado pelo nosso serviço de análise de dados."
-        }
-        
-        const mockResponse: ChatMessage = {
-            id: `ai-${Date.now()}`,
-            sender: 'ai',
-            text: responseText
-        };
-
-        return new Promise(resolve => {
-            setTimeout(() => resolve(mockResponse), 1500 + Math.random() * 1000); // Simula latência da rede e da IA
+        logger.log('ApiClient', 'INFO', `Enviando mensagem para a sessão ${sessionId}: "${message}"`);
+        return apiFetch(`${BASE_URL}/chat/${sessionId}/message`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            // Assuming the backend expects a simple object with a 'message' key
+            body: JSON.stringify({ message }),
         });
     }
 
     async updateClassification(taskId: string, docName: string, newClassification: ClassificationResult['operationType']): Promise<{ success: boolean }> {
-        logger.log('ApiClient', 'INFO', `[MOCK] Atualizando classificação para ${docName} para ${newClassification} na task ${taskId}.`);
-        return new Promise(resolve => {
-            setTimeout(() => resolve({ success: true }), 250); // Simula latência da API
+        logger.log('ApiClient', 'INFO', `Atualizando classificação para ${docName} para ${newClassification} na task ${taskId}.`);
+        // Assuming snake_case for Python backend
+        return apiFetch(`${BASE_URL}/analysis/${taskId}/classification`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ doc_name: docName, new_classification: newClassification }),
         });
     }
 }
 
-export const apiClient = new MockApiClient();
+// Export a singleton instance of the real API client
+export const apiClient = new ApiClient();

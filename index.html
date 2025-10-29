@@ -12,6 +12,53 @@
         -moz-osx-font-smoothing: grayscale;
       }
       @import url('https://rsms.me/inter/inter.css');
+
+      /* Estilos para o Bloco de Código e Syntax Highlighting */
+      .code-block {
+        background-color: #111827; /* bg-gray-900 */
+        border-radius: 0.5rem;
+        border: 1px solid #374151; /* bg-gray-700 */
+        overflow: hidden;
+        margin-top: 0.75rem;
+        margin-bottom: 0.75rem;
+      }
+      .code-block-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background-color: #374151; /* bg-gray-700 */
+        padding: 0.25rem 0.75rem;
+        font-size: 0.75rem;
+        color: #d1d5db; /* text-gray-300 */
+      }
+      .code-block-header button {
+        background: none;
+        border: none;
+        color: #9ca3af; /* text-gray-400 */
+        cursor: pointer;
+        padding: 0.25rem;
+        border-radius: 0.25rem;
+      }
+      .code-block-header button:hover {
+        background-color: #4b5563; /* bg-gray-600 */
+        color: #f3f4f6; /* text-gray-100 */
+      }
+      .code-block pre {
+        margin: 0;
+        padding: 0.75rem;
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+        font-size: 0.875rem;
+        line-height: 1.25rem;
+        overflow-x: auto;
+      }
+      .token-punctuation { color: #89ddff; }
+      .token-string { color: #c3e88d; }
+      .token-number { color: #f78c6c; }
+      .token-boolean { color: #f78c6c; }
+      .token-key { color: #c792ea; }
+      .token-null { color: #f78c6c; }
+      .token-comment { color: #546e7a; font-style: italic; }
+
     </style>
   <script type="importmap">
 {

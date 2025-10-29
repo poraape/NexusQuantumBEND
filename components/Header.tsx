@@ -1,5 +1,5 @@
 import React from 'react';
-import { DownloadIcon, LoadingSpinnerIcon, DocumentTextIcon, FileInfoIcon, PanelLayoutIcon } from './icons';
+import { DownloadIcon, LoadingSpinnerIcon, DocumentTextIcon, FileInfoIcon, PanelLayoutIcon, ShieldExclamationIcon } from './icons';
 import type { ExportType } from '../App';
 import LogoIcon from './LogoIcon'; // Importa o novo ícone
 
@@ -54,18 +54,26 @@ const Header: React.FC<HeaderProps> = ({ onReset, showExports, showSpedExport, i
                         >
                             <PanelLayoutIcon className="w-5 h-5"/>
                         </button>
-                        <span className="text-sm text-gray-400 hidden sm:block">Exportar Relatório:</span>
+                        <span className="text-sm text-gray-400 hidden sm:block">Exportar:</span>
                         {exportOptions.map(({ type, label, icon }) => (
                             <button
                                 key={type}
                                 onClick={() => onExport(type)}
                                 disabled={!!isExporting}
                                 className="p-2 bg-gray-700 hover:bg-gray-600 rounded-md transition-colors disabled:opacity-50 disabled:cursor-wait w-9 h-9 flex items-center justify-center"
-                                title={`Exportar para ${label}`}
+                                title={`Exportar Relatório para ${label}`}
                             >
                                 {isExporting === type ? <LoadingSpinnerIcon className="w-4 h-4 animate-spin"/> : icon}
                             </button>
                         ))}
+                        <button
+                            onClick={() => onExport('inconsistencies_xlsx')}
+                            disabled={!!isExporting}
+                            className="p-2 bg-yellow-600/50 hover:bg-yellow-500/50 text-yellow-300 rounded-md transition-colors disabled:opacity-50 disabled:cursor-wait w-9 h-9 flex items-center justify-center"
+                            title="Exportar Inconsistências (XLSX)"
+                        >
+                            {isExporting === 'inconsistencies_xlsx' ? <LoadingSpinnerIcon className="w-4 h-4 animate-spin"/> : <ShieldExclamationIcon className="w-5 h-5" />}
+                        </button>
                     </div>
                 )}
                 

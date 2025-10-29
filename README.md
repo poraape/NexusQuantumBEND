@@ -2,13 +2,13 @@
 
 **Nexus QuantumI2A2** é uma Single Page Application (SPA) de análise fiscal interativa que processa dados de Notas Fiscais Eletrônicas (NFe) e gera insights acionáveis através de um sistema de IA que simula múltiplos agentes especializados.
 
-Esta aplicação demonstra uma arquitetura frontend completa e robusta, onde todo o processamento, desde o parsing de arquivos até a análise por IA, ocorre diretamente no navegador do cliente, combinando análise determinística com o poder de modelos de linguagem generativa (LLMs) para fornecer uma análise fiscal completa e um assistente de chat inteligente.
+Esta aplicação demonstra uma arquitetura cliente-servidor robusta, onde o processamento pesado de dados é delegado a um backend assíncrono, enquanto o frontend foca em prover uma experiência de usuário rica e interativa.
 
 ---
 
 ## ✨ Funcionalidades Principais
 
-*   **Pipeline Multiagente Client-Side:** Uma cadeia de agentes especializados (Importação/OCR, Auditor, Classificador, Agente de Inteligência, Contador) processa os arquivos em etapas diretamente no navegador.
+*   **Pipeline Multiagente no Backend:** Uma cadeia de agentes especializados (Importação/OCR, Auditor, Classificador, Agente de Inteligência, Contador) processa os arquivos em etapas de forma assíncrona.
 *   **Upload Flexível de Arquivos:** Suporte para múltiplos formatos, incluindo `XML`, `CSV`, `XLSX`, `PDF`, imagens (`PNG`, `JPG`) e arquivos `.ZIP` contendo múltiplos documentos.
 *   **Análise Fiscal Aprofundada por IA:** Geração de um relatório detalhado com:
     *   **Resumo Executivo e Recomendações Estratégicas** gerados por IA.
@@ -22,42 +22,25 @@ Esta aplicação demonstra uma arquitetura frontend completa e robusta, onde tod
 
 ---
 
-## 🏗️ Arquitetura Atual: Frontend-Only com IA no Navegador
+## 🏗️ Arquitetura: Cliente-Servidor com Processamento Assíncrono
 
-A implementação atual é uma demonstração poderosa de uma arquitetura totalmente client-side, executada no navegador do usuário.
+A aplicação utiliza uma arquitetura cliente-servidor moderna para garantir escalabilidade, segurança e uma experiência de usuário responsiva. O processamento pesado de dados e as interações com a IA são delegados a um backend assíncrono, enquanto o frontend foca em fornecer uma interface rica e interativa.
 
 ### Frontend (Esta Aplicação)
 
 A aplicação é uma SPA desenvolvida com **React** e **TypeScript**, utilizando **TailwindCSS** para estilização. Ela é responsável por:
-*   Fornecer uma interface de usuário rica e interativa.
-*   Executar o pipeline de agentes simulado no lado do cliente (`useAgentOrchestrator`).
-*   Interagir **diretamente com a Google Gemini API** para capacidades de IA generativa (análise, chat, busca).
-*   Utilizar bibliotecas como Tesseract.js e PDF.js (com Web Workers) para processamento pesado de arquivos em background sem travar a UI.
-*   Renderizar dashboards, relatórios e o assistente de chat.
+*   Fornecer uma interface de usuário rica e interativa para upload de arquivos e visualização de relatórios.
+*   Comunicar-se com o backend via API REST para iniciar análises e obter resultados.
+*   Gerenciar o estado da aplicação, incluindo o progresso das tarefas em background através de polling.
+*   Renderizar dashboards, relatórios e o assistente de chat com os dados processados pelo backend.
 
----
+### Backend (Serviço Separado)
 
-##  Blueprint para Backend de Produção
-
-Para uma solução escalável em produção, a arquitetura pode evoluir para um sistema cliente-servidor, desacoplando a interface do processamento pesado.
-
-#### Stack Tecnológico Sugerido
-*   **Framework:** Python 3.11+ com FastAPI.
-*   **Processamento Assíncrono:** Celery com RabbitMQ como message broker e Redis para cache.
-*   **Orquestração de Agentes:** Orquestrador baseado em state machine (LangGraph opcional).
-*   **Banco de Dados:** PostgreSQL para metadados, regras e logs de auditoria.
-*   **Armazenamento de Arquivos:** S3-compatible (MinIO).
-*   **Inteligência Artificial:** Google Gemini API (`gemini-2.5-flash`).
-*   **Observabilidade:** Padrão OpenTelemetry (OTLP) para tracing, métricas e logs.
-
-#### Sistema Multiagente no Backend
-
-*   **Orquestrador:** Gerencia o fluxo de trabalho (Saga pattern), garantindo a execução resiliente e a compensação de falhas.
-*   **ExtractorAgent:** Ingestão de dados brutos (XML, PDF, Imagens) via fila, usando OCR/parsing para extrair dados estruturados.
-*   **AuditorAgent:** Aplica um motor de regras fiscais para validar os dados e calcula um score de risco.
-*   **ClassifierAgent:** Categoriza os documentos por tipo de operação e setor.
-*   **AccountantAgent:** Automatiza lançamentos contábeis, apura impostos e gera o arquivo SPED.
-*   **IntelligenceAgent:** Gera insights gerenciais, alimenta o RAG para o chat e responde a simulações.
+O backend é construído com **Python/FastAPI** e utiliza **Celery** com **RabbitMQ** e **Redis** para executar um pipeline de análise assíncrono e robusto. Suas responsabilidades incluem:
+*   **API (FastAPI):** Expor endpoints REST para o frontend, gerenciar o ciclo de vida das tarefas e servir os resultados. A API implementa um **middleware CORS** para permitir a comunicação segura com o frontend.
+*   **Workers Assíncronos (Celery):** Executar o pipeline de agentes (OCR, Auditoria, Classificação, etc.) em background, permitindo que a API responda imediatamente.
+*   **Interação com a IA:** Todas as chamadas para a Google Gemini API são centralizadas no backend, protegendo as chaves de API e permitindo um gerenciamento de custos mais eficaz.
+*   **Orquestração de Agentes:** Gerenciar o fluxo de trabalho complexo entre os diferentes agentes de análise, garantindo que os dados sejam processados de forma sequencial e resiliente.
 
 ---
 
@@ -74,23 +57,25 @@ O projeto adere a um rigoroso padrão de qualidade, imposto por automação no p
 
 ---
 
-## 🚀 Execução do Frontend
+## 🚀 Execução do Projeto
 
 ### No AI Studio
-1. Clique no botão "Run" ou "Executar".
-2. Uma nova aba será aberta com a aplicação em funcionamento.
+1.  **Execute o Backend:** Siga as instruções no arquivo `backend/README.md` para iniciar os serviços do backend com Docker Compose.
+2.  **Execute o Frontend:** Clique no botão "Run" ou "Executar" no AI Studio para o projeto do frontend.
+3.  Uma nova aba será aberta com a aplicação em funcionamento, pronta para se comunicar com o backend em `http://localhost:8000`.
 
 ### Localmente
-1. **Clone o repositório.**
-2. **Configure as Variáveis de Ambiente:** Crie um arquivo `.env.local` na raiz e adicione `VITE_API_KEY=SUA_API_KEY_AQUI`.
-3. **Inicie o Servidor de Desenvolvimento (ex: com Vite):**
+1.  **Clone o repositório.**
+2.  **Execute o Backend:** Siga as instruções no `backend/README.md` para iniciar o ambiente Docker.
+3.  **Inicie o Servidor de Desenvolvimento do Frontend (ex: com Vite):**
    ```bash
+   # Navegue até a pasta do frontend
    # Instale as dependências (se houver um package.json)
    npm install
    # Inicie o servidor
    npm run dev
    ```
-4. Acesse a URL fornecida (geralmente `http://localhost:5173`).
+4.  Acesse a URL do frontend fornecida (geralmente `http://localhost:5173`).
 
 ---
 
@@ -99,13 +84,14 @@ O projeto adere a um rigoroso padrão de qualidade, imposto por automação no p
 ```
 /
 ├── src/
-│   ├── agents/            # Lógica de negócios de cada agente IA
+│   ├── agents/            # Lógica de negócios de cada agente IA (legado, agora no backend)
 │   ├── components/        # Componentes React reutilizáveis
 │   ├── hooks/             # Hooks React customizados (ex: useAgentOrchestrator)
-│   ├── services/          # Serviços (chamadas à API Gemini, logger)
+│   ├── services/          # Serviços (chamadas à API do backend, logger)
 │   ├── utils/             # Funções utilitárias (parsers, exportação, regras)
 │   ├── App.tsx            # Componente principal da aplicação
 │   └── types.ts           # Definições de tipos TypeScript
+├── backend/               # Código-fonte e configuração do backend FastAPI/Celery
 ├── index.html             # Arquivo HTML principal
 └── README.md              # Este arquivo
 ```

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import type { AuditReport, AuditedDocument, AuditStatus, ClassificationResult, AccountingEntry, AIDrivenInsight, AIFindingSeverity } from '../types';
 import { 
     MetricIcon, 
@@ -9,6 +9,9 @@ import {
     FileIcon,
     AiIcon
 } from './icons';
+import { parseSafeFloat } from '../utils/parsingUtils';
+import dayjs from 'dayjs';
+
 
 const statusStyles: { [key in AuditStatus]: { badge: string; icon: React.ReactNode; text: string; } } = {
     OK: {
@@ -170,16 +173,63 @@ const AccountingEntriesViewer: React.FC<{ entries: AccountingEntry[] }> = ({ ent
     );
 };
 
+/**
+ * Renders a metric value, handling null, undefined, and zero cases appropriately.
+ * @param value The metric value to render.
+ * @returns A JSX element representing the value.
+ */
+const renderMetricValue = (value: string | number | null | undefined) => {
+    // Case 1: Null, undefined, or empty string
+    if (value === null || value === undefined || value === '') {
+        return <span className="text-gray-500" title="Dado não disponível">—</span>;
+    }
+    
+    // Case 2: A valid zero value
+    if (Number(parseSafeFloat(value)) === 0) {
+        return <span title="Valor zero registrado">{String(value)}</span>;
+    }
+    
+    // Case 3: A valid, non-zero value
+    return String(value);
+};
 
-const ReportViewer: React.FC<{ report: AuditReport, onClassificationChange: (docName: string, newClassification: ClassificationResult['operationType']) => void }> = ({ report, onClassificationChange }) => {
-  const { summary, documents, accountingEntries, aiDrivenInsights } = report;
 
-  const docStats = documents.reduce((acc, item) => {
+interface ReportViewerProps {
+    report: AuditReport;
+    onClassificationChange: (docName: string, newClassification: ClassificationResult['operationType']) => void;
+    dateFilter: { start: string; end: string };
+}
+
+const ReportViewer: React.FC<ReportViewerProps> = ({ report, onClassificationChange, dateFilter }) => {
+  const { summary, accountingEntries, aiDrivenInsights } = report;
+
+  const filteredDocuments = useMemo(() => {
+    if (!dateFilter.start && !dateFilter.end) {
+        return report.documents;
+    }
+    const start = dateFilter.start ? dayjs(dateFilter.start) : null;
+    const end = dateFilter.end ? dayjs(dateFilter.end).endOf('day') : null;
+
+    return report.documents.filter(doc => {
+        const emissionDateStr = doc.doc.data?.[0]?.data_emissao;
+        if (!emissionDateStr) return false;
+        
+        const emissionDate = dayjs(emissionDateStr);
+        if (!emissionDate.isValid()) return false;
+
+        if (start && emissionDate.isBefore(start)) return false;
+        if (end && emissionDate.isAfter(end)) return false;
+
+        return true;
+    });
+  }, [report.documents, dateFilter]);
+
+  const docStats = filteredDocuments.reduce((acc, item) => {
       acc[item.status] = (acc[item.status] || 0) + 1;
       return acc;
   }, {} as Record<AuditStatus, number>);
 
-  const averageScore = (documents.reduce((acc, doc) => acc + (doc.score ?? 0), 0) / (documents.length || 1)).toFixed(1);
+  const averageScore = (filteredDocuments.reduce((acc, doc) => acc + (doc.score ?? 0), 0) / (filteredDocuments.length || 1)).toFixed(1);
 
 
   return (
@@ -195,9 +245,9 @@ const ReportViewer: React.FC<{ report: AuditReport, onClassificationChange: (doc
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2 gap-4">
                 {summary.keyMetrics.map((item, index) => (
                 <div key={index} className="bg-gray-700/50 p-4 rounded-md">
-                    <p className="font-bold text-lg text-teal-300">{item.value}</p>
+                    <p className="font-bold text-lg text-teal-300">{renderMetricValue(item.value)}</p>
                     <p className="text-sm font-semibold text-gray-300">{item.metric}</p>
-                    <p className="text-xs text-gray-400 mt-1">{item.insight}</p>
+                    <p className="text-xs text-gray-400 mt-1">{item.insight || <span className="text-gray-500 italic">Sem insight adicional.</span>}</p>
                 </div>
                 ))}
             </div>
@@ -255,17 +305,23 @@ const ReportViewer: React.FC<{ report: AuditReport, onClassificationChange: (doc
       <div>
          <h2 className="text-xl font-bold text-gray-200 mb-4 border-t border-gray-700 pt-8">Detalhes por Documento</h2>
          <div className="bg-gray-700/30 p-4 rounded-lg mb-4 flex justify-around items-center text-center flex-wrap gap-4">
-            <div className="text-gray-300"><span className="text-2xl font-bold">{documents.length}</span><br/><span className="text-xs">Total</span></div>
+            <div className="text-gray-300"><span className="text-2xl font-bold">{filteredDocuments.length}</span><br/><span className="text-xs">Total</span></div>
             <div className="text-teal-300"><span className="text-2xl font-bold">{docStats.OK || 0}</span><br/><span className="text-xs">OK</span></div>
             <div className="text-yellow-300"><span className="text-2xl font-bold">{docStats.ALERTA || 0}</span><br/><span className="text-xs">Alertas</span></div>
             <div className="text-red-300"><span className="text-2xl font-bold">{docStats.ERRO || 0}</span><br/><span className="text-xs">Erros</span></div>
             <div className="text-blue-300"><span className="text-2xl font-bold">{averageScore}</span><br/><span className="text-xs">Score Médio</span></div>
          </div>
-         <div className="space-y-2 max-h-96 overflow-y-auto pr-2">
-            {documents.map((item, index) => (
-                <DocumentItem key={`${item.doc.name}-${index}`} item={item} onClassificationChange={onClassificationChange} />
-            ))}
-         </div>
+         {filteredDocuments.length > 0 ? (
+            <div className="space-y-2 max-h-96 overflow-y-auto pr-2">
+                {filteredDocuments.map((item, index) => (
+                    <DocumentItem key={`${item.doc.name}-${index}`} item={item} onClassificationChange={onClassificationChange} />
+                ))}
+            </div>
+         ) : (
+            <div className="text-center text-gray-500 py-4">
+                Nenhum documento encontrado para o filtro de data selecionado.
+            </div>
+         )}
       </div>
 
        {/* Accounting Entries Section */}

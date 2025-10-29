@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import type { ChatMessage, SmartSearchResult } from '../types';
 import type { ExportType } from '../App';
-import Chart from './Chart';
-import { SendIcon, UserIcon, AiIcon, LoadingSpinnerIcon, StopIcon, DownloadIcon, DocumentTextIcon, PaperClipIcon } from './icons';
+import { SendIcon, LoadingSpinnerIcon, StopIcon, DownloadIcon, DocumentTextIcon, PaperClipIcon } from './icons';
 import { exportConversationToDocx, exportConversationToHtml, exportConversationToPdf } from '../utils/exportConversationUtils';
+import ChatMessageContent from './ChatMessageContent'; // Import the new component
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -91,15 +91,6 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
       { type: 'pdf', label: 'PDF', icon: <span className="font-bold text-sm">P</span> },
   ];
   
-  const renderMessageContent = (message: ChatMessage) => {
-    const html = message.text
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\* (.*?)(?=\n\*|\n\n|$)/g, '<li class="ml-4 list-disc">$1</li>')
-      .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>');
-
-    return <div dangerouslySetInnerHTML={{ __html: html.replace(/\n/g, '<br />') }} />;
-  };
-
   const suggestedQuestions = [
     "Qual foi o produto com o maior valor total?",
     "Resuma as principais inconsistências encontradas.",
@@ -144,34 +135,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
             )}
         </div>
       </div>
-      <div className="flex-grow p-4 overflow-y-auto space-y-6">
+      <div className="flex-grow p-4 overflow-y-auto space-y-4">
         {messages.map((message) => (
-          <div key={message.id} className={`flex items-start gap-3 ${message.sender === 'user' ? 'justify-end' : ''}`}>
-            {message.sender === 'ai' && (
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-teal-400 flex items-center justify-center flex-shrink-0">
-                <AiIcon className="w-5 h-5 text-white" />
-              </div>
-            )}
-            <div className={`max-w-xl p-3 rounded-lg ${
-                message.sender === 'user'
-                  ? 'bg-blue-600 text-white rounded-br-none'
-                  : 'bg-gray-700 text-gray-200 rounded-bl-none'
-              }`}>
-              <div className="prose prose-sm prose-invert max-w-none">
-                 {isStreaming && message.id === messages[messages.length - 1].id ? <LoadingSpinnerIcon className="w-5 h-5 animate-spin" /> : renderMessageContent(message)}
-              </div>
-              {message.chartData && (
-                <div className="mt-4 bg-gray-800/50 p-4 rounded-md" data-chart-container="true">
-                  <Chart {...message.chartData} />
-                </div>
-              )}
-            </div>
-             {message.sender === 'user' && (
-              <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center flex-shrink-0">
-                <UserIcon className="w-5 h-5 text-gray-300" />
-              </div>
-            )}
-          </div>
+          <ChatMessageContent key={message.id} message={message} isStreaming={isStreaming && message.id === messages[messages.length - 1].id} />
         ))}
         <div ref={messagesEndRef} />
       </div>

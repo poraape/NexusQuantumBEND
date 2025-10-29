@@ -42,6 +42,67 @@ export const exportToJson = async (report: AuditReport, filename: string) => {
     saveAs(blob, `${filename}.json`);
 };
 
+export const exportInconsistenciesToXlsx = async (report: AuditReport, filename: string) => {
+    const { utils, writeFile } = await import('xlsx');
+    const wb = utils.book_new();
+
+    // Sheet 1: Auditor Inconsistencies
+    const auditData = report.documents.flatMap(d =>
+        d.inconsistencies.map(inc => ({
+            'Documento de Origem': d.doc.name,
+            'Severidade': inc.severity,
+            'Código': inc.code,
+            'Mensagem': inc.message,
+            'Explicação (XAI)': inc.explanation,
+            'Base Normativa': inc.normativeBase || 'N/A',
+        }))
+    );
+    if (auditData.length > 0) {
+        const wsAudit = utils.json_to_sheet(auditData);
+        utils.book_append_sheet(wb, wsAudit, 'Auditoria Determinística');
+    }
+
+    // Sheet 2: Deterministic Cross-Validation
+    if (report.deterministicCrossValidation && report.deterministicCrossValidation.length > 0) {
+        const deterministicCVData = report.deterministicCrossValidation.flatMap(res => 
+            res.discrepancies.map(disc => ({
+                'Chave de Comparação': res.comparisonKey,
+                'Atributo': res.attribute,
+                'Descrição': res.description,
+                'Severidade': res.severity,
+                'Documento A': disc.docA.name,
+                'Valor A': disc.valueA,
+                'Documento B': disc.docB.name,
+                'Valor B': disc.valueB,
+            }))
+        );
+        const wsDeterministicCV = utils.json_to_sheet(deterministicCVData);
+        utils.book_append_sheet(wb, wsDeterministicCV, 'Validação Cruzada (Det.)');
+    }
+    
+    // Sheet 3: AI Cross-Validation
+    if (report.crossValidationResults && report.crossValidationResults.length > 0) {
+        const aiCVData = report.crossValidationResults.map(res => ({
+            'Atributo': res.attribute,
+            'Observação da IA': res.observation,
+            'Documento A': res.documents[0]?.name || 'N/A',
+            'Valor A': res.documents[0]?.value || 'N/A',
+            'Documento B': res.documents[1]?.name || 'N/A',
+            'Valor B': res.documents[1]?.value || 'N/A',
+        }));
+        const wsAiCV = utils.json_to_sheet(aiCVData);
+        utils.book_append_sheet(wb, wsAiCV, 'Validação Cruzada (IA)');
+    }
+
+    // If no data was added, add a placeholder sheet
+    if (wb.SheetNames.length === 0) {
+        const wsEmpty = utils.aoa_to_sheet([["Nenhuma inconsistência encontrada para exportar."]]);
+        utils.book_append_sheet(wb, wsEmpty, 'Sem Dados');
+    }
+
+    writeFile(wb, `${filename}_inconsistencias.xlsx`);
+};
+
 export const exportToXlsx = async (report: AuditReport, filename: string) => {
     const { utils, writeFile } = await import('xlsx');
     const wb = utils.book_new();

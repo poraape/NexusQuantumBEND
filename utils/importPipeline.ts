@@ -14,6 +14,48 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://aistudiocdn.com/pdfjs-dist@^4.
 
 // --- Helper Functions ---
 
+/**
+ * Reads a file as a string, automatically detecting its character encoding.
+ * It checks for UTF BOMs and falls back from UTF-8 to Windows-1252 if decoding fails.
+ * @param file The file to read.
+ * @returns A promise that resolves with the decoded text content of the file.
+ */
+const readFileWithDetectedEncoding = async (file: File): Promise<string> => {
+    const buffer = await file.arrayBuffer();
+    const uint8 = new Uint8Array(buffer);
+    
+    let encoding = 'utf-8'; // Default encoding
+    
+    // BOM (Byte Order Mark) Detection
+    if (uint8.length >= 3 && uint8[0] === 0xEF && uint8[1] === 0xBB && uint8[2] === 0xBF) {
+        encoding = 'utf-8';
+    } else if (uint8.length >= 2 && uint8[0] === 0xFE && uint8[1] === 0xFF) {
+        encoding = 'utf-16be';
+    } else if (uint8.length >= 2 && uint8[0] === 0xFF && uint8[1] === 0xFE) {
+        encoding = 'utf-16le';
+    }
+    // More complex BOMs like UTF-32 are rare but could be added here.
+
+    try {
+        // Attempt to decode with the detected (or default) encoding.
+        // `fatal: true` ensures an error is thrown for invalid byte sequences.
+        const decoder = new TextDecoder(encoding, { fatal: true });
+        return decoder.decode(buffer);
+    } catch (e) {
+        // If the primary decoding fails, it might be a legacy encoding.
+        // Windows-1252 is a common fallback for files from older systems.
+        logger.log('ImportPipeline', 'WARN', `Falha ao decodificar ${file.name} como ${encoding}, tentando fallback para windows-1252.`, { error: e });
+        try {
+            const fallbackDecoder = new TextDecoder('windows-1252');
+            return fallbackDecoder.decode(buffer);
+        } catch (fallbackError) {
+            logger.log('ImportPipeline', 'ERROR', `Falha ao decodificar ${file.name} com qualquer codificação de fallback.`, { error: fallbackError });
+            throw new Error(`Não foi possível decodificar o arquivo ${file.name}. A codificação de caracteres pode ser desconhecida ou o arquivo está corrompido.`);
+        }
+    }
+};
+
+
 const getFileExtension = (filename: string): string => {
     return filename.slice(((filename.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
 };
@@ -161,7 +203,7 @@ const normalizeNFeData = (nfeData: any): Record<string, any>[] => {
 const handleXML = async (file: File): Promise<ImportedDoc> => {
     try {
         const { XMLParser } = await import('fast-xml-parser');
-        const text = await file.text();
+        const text = await readFileWithDetectedEncoding(file);
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: "@_",
@@ -177,29 +219,37 @@ const handleXML = async (file: File): Promise<ImportedDoc> => {
             return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'error', error: 'Nenhum item de produto encontrado no XML ou XML malformado.', raw: file };
         }
         return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'parsed', data, raw: file };
-    } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        logger.log('ImportPipeline', 'ERROR', `Erro crítico ao processar XML: ${file.name}`, { error });
+    } catch (e: unknown) {
+// FIX: Renamed 'error' to 'e' to resolve a "Cannot find name 'error'" compilation error.
+        const message = e instanceof Error ? e.message : String(e);
+        logger.log('ImportPipeline', 'ERROR', `Erro crítico ao processar XML: ${file.name}`, { error: e });
         return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'error', error: `Erro ao processar XML: ${message}`, raw: file };
     }
 };
 
-const handleCSV = (file: File): Promise<ImportedDoc> => {
-    return new Promise((resolve) => {
-        Papa.parse(file, {
-            header: true,
-            skipEmptyLines: true,
-            dynamicTyping: true,
-            transformHeader: (header) => header.trim().toLowerCase().replace(/\s+/g, '_'),
-            complete: (results) => {
-                resolve({ kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: results.data as Record<string, any>[], raw: file });
-            },
-            error: (error: unknown) => {
-                const message = error instanceof Error ? error.message : String(error);
-                resolve({ kind: 'CSV', name: file.name, size: file.size, status: 'error', error: `Erro ao processar CSV: ${message}`, raw: file });
-            },
+const handleCSV = async (file: File): Promise<ImportedDoc> => {
+    try {
+        const text = await readFileWithDetectedEncoding(file);
+        return new Promise((resolve) => {
+            Papa.parse(text, {
+                header: true,
+                skipEmptyLines: true,
+                dynamicTyping: true,
+                transformHeader: (header) => header.trim().toLowerCase().replace(/\s+/g, '_'),
+                complete: (results) => {
+                    resolve({ kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: results.data as Record<string, any>[], raw: file });
+                },
+                error: (error: unknown) => {
+                    const message = error instanceof Error ? error.message : String(error);
+                    resolve({ kind: 'CSV', name: file.name, size: file.size, status: 'error', error: `Erro ao processar CSV: ${message}`, raw: file });
+                },
+            });
         });
-    });
+    } catch (e) {
+// FIX: Renamed 'error' to 'e' to resolve a "Cannot find name 'error'" compilation error.
+        const message = e instanceof Error ? e.message : String(e);
+        return { kind: 'CSV', name: file.name, size: file.size, status: 'error', error: message, raw: file };
+    }
 };
 
 const handleXLSX = async (file: File): Promise<ImportedDoc> => {
@@ -229,8 +279,9 @@ const handleImage = async (file: File): Promise<ImportedDoc> => {
             logger.log('nlpAgent', 'WARN', `Nenhum dado estruturado extraído do texto da imagem ${file.name}`);
         }
         return { kind: 'IMAGE', name: file.name, size: file.size, status: 'parsed', text, data, raw: file };
-    } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
+    } catch (e: unknown) {
+// FIX: Renamed 'error' to 'e' to resolve a "Cannot find name 'error'" compilation error.
+        const message = e instanceof Error ? e.message : String(e);
         return { kind: 'IMAGE', name: file.name, size: file.size, status: 'error', error: message, raw: file };
     }
 };

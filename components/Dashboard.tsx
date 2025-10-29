@@ -5,9 +5,11 @@ import CrossValidationPanel from './CrossValidationPanel';
 import SmartSearch from './SmartSearch';
 import { parseSafeFloat } from '../utils/parsingUtils';
 import AnalysisDisplay from './AnalysisDisplay';
+import dayjs from 'dayjs';
 
 interface DashboardProps {
     report: AuditReport;
+    dateFilter: { start: string; end: string };
 }
 
 // Tabela de alíquotas de ICMS interestadual.
@@ -57,13 +59,34 @@ interface MemoizedChartData {
     ufChart: ChartData;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ report }) => {
+const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter }) => {
     const [simulationRate, setSimulationRate] = useState<number>(18.0);
     const [baseValueForSim, setBaseValueForSim] = useState<number>(0);
     const [referenceRate, setReferenceRate] = useState<number>(18.0);
 
+    const filteredDocuments = useMemo(() => {
+        if (!dateFilter.start && !dateFilter.end) {
+            return report.documents;
+        }
+        const start = dateFilter.start ? dayjs(dateFilter.start) : null;
+        const end = dateFilter.end ? dayjs(dateFilter.end).endOf('day') : null;
+
+        return report.documents.filter(doc => {
+            const emissionDateStr = doc.doc.data?.[0]?.data_emissao;
+            if (!emissionDateStr) return false;
+            
+            const emissionDate = dayjs(emissionDateStr);
+            if (!emissionDate.isValid()) return false;
+
+            if (start && emissionDate.isBefore(start)) return false;
+            if (end && emissionDate.isAfter(end)) return false;
+
+            return true;
+        });
+    }, [report.documents, dateFilter]);
+
     useEffect(() => {
-        const validDocs = report.documents.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
+        const validDocs = filteredDocuments.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
         const allItems = validDocs.flatMap(d => d.doc.data!);
         
         let totalProductValue = 0;
@@ -83,14 +106,16 @@ const Dashboard: React.FC<DashboardProps> = ({ report }) => {
 
         setBaseValueForSim(totalProductValue);
         setReferenceRate(avgRate);
-        setSimulationRate(avgRate); // Initialize slider with the reference rate
+        if (simulationRate === 18.0 || totalProductValue === 0) {
+            setSimulationRate(avgRate); // Initialize or reset slider with the reference rate
+        }
 
-    }, [report]);
+    }, [filteredDocuments, simulationRate]);
 
     const estimatedIcms = baseValueForSim * (simulationRate / 100);
 
     const chartData = useMemo((): MemoizedChartData => {
-        const validDocs = report.documents.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
+        const validDocs = filteredDocuments.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
         const allItems = validDocs.flatMap(d => d.doc.data!);
         
         const cfopData: Record<string, number> = {};
@@ -106,7 +131,6 @@ const Dashboard: React.FC<DashboardProps> = ({ report }) => {
             ncmData[ncm] = (ncmData[ncm] || 0) + value;
         }
 
-        // FIX: Replaced reduce with forEach to ensure correct type inference for ufDestData.
         const ufDestData: Record<string, number> = {};
         validDocs.forEach((auditedDoc) => {
             if (auditedDoc.doc.data && auditedDoc.doc.data.length > 0) {
@@ -135,7 +159,7 @@ const Dashboard: React.FC<DashboardProps> = ({ report }) => {
                 yAxisLabel: 'Qtd. Documentos',
             },
         };
-    }, [report]);
+    }, [filteredDocuments]);
 
     return (
         <div className="bg-gray-800 p-6 rounded-lg shadow-lg animate-fade-in space-y-8">

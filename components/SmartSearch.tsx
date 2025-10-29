@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Type } from "@google/genai";
 import type { AuditReport, SmartSearchResult } from '../types';
 import Papa from 'papaparse';
-import { AiIcon, LoadingSpinnerIcon, SendIcon } from './icons';
+import { AiIcon, LoadingSpinnerIcon, SendIcon, FileIcon } from './icons';
 import { logger } from '../services/logger';
 import { generateJSON } from '../services/geminiService';
 
@@ -22,6 +22,14 @@ const searchResponseSchema = {
                 items: {
                     type: Type.STRING, // Each cell is a string
                 },
+            }
+        },
+        references: {
+            type: Type.ARRAY,
+            nullable: true,
+            description: "Uma lista de nomes de documentos ou fontes de dados que foram usados para formular a resposta.",
+            items: {
+                type: Type.STRING,
             }
         }
     },
@@ -48,26 +56,35 @@ const SmartSearch: React.FC<SmartSearchProps> = ({ report }) => {
         logger.log('SmartSearch', 'INFO', `Iniciando busca inteligente para a query: "${query}"`);
 
         try {
-            const validDocsData = report.documents
+            const validDocsDataWithSource = report.documents
                 .filter(d => d.status !== 'ERRO' && d.doc.data)
-                .flatMap(d => d.doc.data!);
+                .flatMap(d => {
+                    const docName = d.doc.name;
+                    // Adiciona o nome do documento de origem a cada item para referência da IA
+                    return d.doc.data!.map(item => ({ ...item, fonte_documento: docName }));
+                });
             
-            const dataSampleForAI = Papa.unparse(validDocsData.slice(0, 500));
+            const dataSampleForAI = Papa.unparse(validDocsDataWithSource.slice(0, 500));
             
             const prompt = `
-                Você é um assistente de análise de dados fiscais. Responda à pergunta do usuário com base EXCLUSIVAMENTE nos dados fornecidos.
-                
+                Você é um assistente de análise de dados fiscais altamente avançado. Sua tarefa é responder a perguntas complexas do usuário com base EXCLUSIVAMENTE nos dados fornecidos, citando suas fontes.
+
                 Métricas Agregadas (Fonte de verdade para totais):
                 ${JSON.stringify(report.aggregatedMetrics, null, 2)}
 
-                Amostra de Dados de Itens (Para perguntas detalhadas):
+                Amostra de Dados de Itens (Para perguntas detalhadas, com a coluna 'fonte_documento' indicando a origem):
                 ${dataSampleForAI}
 
                 Pergunta do Usuário: "${query}"
 
-                Sua resposta DEVE ser um único objeto JSON aderindo ao schema.
-                - Forneça um 'summary' textual.
-                - Se aplicável, retorne uma tabela de 'data' como um array de arrays. A primeira linha (primeiro array) DEVE ser os cabeçalhos da tabela. Cada array subsequente é uma linha de dados. Todos os valores devem ser retornados como strings.
+                Instruções:
+                1.  Analise a pergunta do usuário. Se for complexa (ex: "Compare o preço do produto X em SP e RJ"), quebre-a em partes.
+                2.  Use as 'Métricas Agregadas' para perguntas sobre totais. Use a 'Amostra de Dados' para detalhes, comparações e classificações.
+                3.  **Citação de Fontes é Obrigatória:** Ao fornecer uma resposta, você DEVE preencher o campo 'references' com os nomes dos documentos (da coluna 'fonte_documento') ou seções (ex: "Métricas Agregadas") que você usou como evidência.
+                4.  Sua resposta DEVE ser um único objeto JSON aderindo ao schema.
+                -   Forneça um 'summary' textual.
+                -   Se aplicável, retorne uma tabela de 'data'. A primeira linha DEVE ser os cabeçalhos.
+                -   Preencha o array 'references' com suas fontes.
             `;
 
             const searchResult = await generateJSON<SmartSearchResult>(
@@ -141,6 +158,19 @@ const SmartSearch: React.FC<SmartSearchProps> = ({ report }) => {
                                     ))}
                                 </tbody>
                             </table>
+                        </div>
+                    )}
+                     {result.references && result.references.length > 0 && (
+                        <div className="border-t border-gray-700/50 pt-3">
+                            <h4 className="text-xs font-semibold text-gray-500 mb-2">Fontes Consultadas:</h4>
+                            <div className="flex flex-wrap gap-2">
+                                {result.references.map((ref, index) => (
+                                    <span key={index} className="text-xs bg-gray-600 text-gray-300 px-2 py-1 rounded-md flex items-center gap-1.5">
+                                        <FileIcon className="w-3 h-3" />
+                                        {ref}
+                                    </span>
+                                ))}
+                            </div>
                         </div>
                     )}
                 </div>

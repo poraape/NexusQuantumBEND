@@ -7,13 +7,14 @@ import Toast from './components/Toast';
 import ProgressTracker from './components/ProgressTracker';
 import PipelineErrorDisplay from './components/PipelineErrorDisplay';
 import { useAgentOrchestrator } from './hooks/useAgentOrchestrator';
-import { exportToMarkdown, exportToHtml, exportToPdf, exportToDocx, exportToJson, exportToXlsx } from './utils/exportUtils';
+import { exportToMarkdown, exportToHtml, exportToPdf, exportToDocx, exportToJson, exportToXlsx, exportInconsistenciesToXlsx } from './utils/exportUtils';
 import LogsPanel from './components/LogsPanel';
 import Dashboard from './components/Dashboard';
 import type { AuditReport } from './types';
 import IncrementalInsights from './components/IncrementalInsights';
+import DateRangeFilter from './components/DateRangeFilter';
 
-export type ExportType = 'md' | 'html' | 'pdf' | 'docx' | 'sped' | 'xlsx' | 'json';
+export type ExportType = 'md' | 'html' | 'pdf' | 'docx' | 'sped' | 'xlsx' | 'json' | 'inconsistencies_xlsx';
 type PipelineStep = 'UPLOAD' | 'PROCESSING' | 'COMPLETE' | 'ERROR';
 type ActiveView = 'report' | 'dashboard' | 'comparative';
 
@@ -25,6 +26,7 @@ const App: React.FC = () => {
     const [analysisHistory, setAnalysisHistory] = useState<AuditReport[]>([]);
     const [processedFiles, setProcessedFiles] = useState<File[]>([]);
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
+    const [dateFilter, setDateFilter] = useState<{ start: string; end: string }>({ start: '', end: '' });
 
 
     const {
@@ -97,6 +99,7 @@ const App: React.FC = () => {
         setAnalysisHistory([]);
         setAuditReport(null);
         setProcessedFiles([]);
+        setDateFilter({ start: '', end: '' });
         resetOrchestrator();
     };
 
@@ -129,6 +132,11 @@ const App: React.FC = () => {
     
             if (type === 'xlsx') {
                 await exportToXlsx(auditReport, filename);
+                return;
+            }
+
+            if (type === 'inconsistencies_xlsx') {
+                await exportInconsistenciesToXlsx(auditReport, filename);
                 return;
             }
             
@@ -180,14 +188,19 @@ const App: React.FC = () => {
                                     </button>
                                 )}
                             </div>
+                            <DateRangeFilter
+                                onFilterChange={(start, end) => setDateFilter({ start, end })}
+                                disabled={!auditReport}
+                            />
                             <div ref={exportableContentRef}>
                                 {activeView === 'report' ? (
                                     <ReportViewer 
                                         report={auditReport} 
                                         onClassificationChange={handleClassificationChange} 
+                                        dateFilter={dateFilter}
                                     />
                                 ) : activeView === 'dashboard' ? (
-                                    <Dashboard report={auditReport} />
+                                    <Dashboard report={auditReport} dateFilter={dateFilter} />
                                 ) : (
                                     <IncrementalInsights history={analysisHistory} />
                                 )}

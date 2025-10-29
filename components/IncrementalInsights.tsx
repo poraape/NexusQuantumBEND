@@ -7,7 +7,22 @@ interface IncrementalInsightsProps {
     history: AuditReport[];
 }
 
-const formatCurrency = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const formatCurrency = (value: number) => {
+    if (isNaN(value)) return '—';
+    return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+/**
+ * Renders a table value, showing a placeholder for null or undefined data.
+ * @param value The value to render.
+ * @returns A JSX element or the original value.
+ */
+const renderTableValue = (value: any) => {
+    if (value === null || value === undefined || value === '') {
+        return <span className="text-gray-500">—</span>;
+    }
+    return value;
+};
 
 
 const IncrementalInsights: React.FC<IncrementalInsightsProps> = ({ history }) => {
@@ -75,7 +90,7 @@ const IncrementalInsights: React.FC<IncrementalInsightsProps> = ({ history }) =>
                                     <td className="px-4 py-2 font-semibold text-gray-300">{metric}</td>
                                     {history.map((report, index) => (
                                          <td key={index} className="px-4 py-2 text-right font-mono">
-                                            {report.aggregatedMetrics?.[metric] || 'N/A'}
+                                            {renderTableValue(report.aggregatedMetrics?.[metric])}
                                          </td>
                                     ))}
                                 </tr>

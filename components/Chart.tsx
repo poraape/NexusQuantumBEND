@@ -12,6 +12,19 @@ const Chart: React.FC<ChartData> = ({ type, title, data, options, xAxisLabel, yA
   const padding = { top: 10, right: 10, bottom: 30, left: 30 };
   const plotWidth = chartWidth - padding.left - padding.right;
   const plotHeight = chartHeight - padding.top - padding.bottom;
+  
+  const hasData = data && data.length > 0 && data.some(d => d.value > 0 || (d.x !== undefined && d.x > 0));
+
+  if (!hasData) {
+      return (
+          <div>
+              <h4 className="text-md font-semibold text-gray-300 mb-2 text-center">{title}</h4>
+              <div className="flex items-center justify-center h-[200px] text-sm text-gray-500">
+                  <p>Dados insuficientes para exibir o gráfico.</p>
+              </div>
+          </div>
+      );
+  }
 
   const renderBarChart = () => {
     const maxValue = Math.max(...data.map(d => d.value), 0);
