@@ -69,25 +69,28 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
         suggestionTimeoutRef.current = null;
     }
 
-    if (isStreaming || isGeneratingSuggestions || messages.length < 2 || messages[messages.length - 1].sender !== 'ai') {
+    if (isStreaming || messages.length < 2 || messages[messages.length - 1].sender !== 'ai') {
         return;
     }
 
-    suggestionTimeoutRef.current = setTimeout(async () => {
+    // Only generate suggestions if not already generating
+    if (!isGeneratingSuggestions) {
         setIsGeneratingSuggestions(true);
-        try {
-            const lastMessages = messages.slice(-2).map(m => ({ sender: m.sender, text: m.text }));
-            const newSuggestions = await generateSuggestedQuestions(lastMessages, report.summary);
+        suggestionTimeoutRef.current = setTimeout(async () => {
+            try {
+                const lastMessages = messages.slice(-2).map(m => ({ sender: m.sender, text: m.text }));
+                const newSuggestions = await generateSuggestedQuestions(lastMessages, report.summary);
 
-            if (Array.isArray(newSuggestions) && newSuggestions.length > 0) {
-                setSuggestedQuestions(newSuggestions);
+                if (Array.isArray(newSuggestions) && newSuggestions.length > 0) {
+                    setSuggestedQuestions(newSuggestions);
+                }
+            } catch (error) {
+                console.error("Failed to generate dynamic suggestions:", error);
+            } finally {
+                setIsGeneratingSuggestions(false);
             }
-        } catch (error) {
-            console.error("Failed to generate dynamic suggestions:", error);
-        } finally {
-            setIsGeneratingSuggestions(false);
-        }
-    }, 1200);
+        }, 1200);
+    }
 
     return () => {
         if (suggestionTimeoutRef.current) {
@@ -95,7 +98,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             suggestionTimeoutRef.current = null;
         }
     };
-  }, [messages, isStreaming, report.summary, isGeneratingSuggestions]);
+  }, [messages, isStreaming, report.summary]); // Removed isGeneratingSuggestions from dependencies
 
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -228,7 +231,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={isStreaming ? "Aguardando resposta do backend..." : "Faça uma pergunta ou adicione arquivos..."}
+            placeholder={isStreaming ? "Aguardando resposta da IA..." : "Faça uma pergunta ou adicione arquivos..."}
             disabled={isStreaming}
             className="flex-grow bg-gray-700 rounded-full py-2 px-4 text-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow disabled:opacity-50"
           />

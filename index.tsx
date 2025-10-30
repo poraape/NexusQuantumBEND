@@ -12,19 +12,21 @@ declare global {
 
 if (typeof window !== 'undefined' && !window.__nexusGlobalHandlersRegistered) {
   window.addEventListener('error', (event) => {
+    const errorStack = event.error instanceof Error ? event.error.stack : 'No stack available';
     logger.log('GlobalError', 'ERROR', 'Erro não tratado capturado pelo window.onerror.', {
       message: event.message,
       filename: event.filename,
       lineno: event.lineno,
       colno: event.colno,
-      stack: event.error?.stack,
+      stack: errorStack,
     });
   });
 
   window.addEventListener('unhandledrejection', (event) => {
+    const reasonStack = event.reason instanceof Error ? event.reason.stack : 'No stack available';
     logger.log('GlobalError', 'ERROR', 'Promise rejeitada sem tratamento.', {
-      reason: event.reason instanceof Error ? event.reason.message : event.reason,
-      stack: event.reason instanceof Error ? event.reason.stack : undefined,
+      reason: event.reason instanceof Error ? event.reason.message : String(event.reason),
+      stack: reasonStack,
     });
   });
 

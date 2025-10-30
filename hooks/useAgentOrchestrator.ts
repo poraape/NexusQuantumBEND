@@ -10,6 +10,7 @@ import { runAccountingAnalysis } from '../agents/accountantAgent';
 import { runDeterministicCrossValidation } from '../utils/fiscalCompare';
 import { startChat } from '../services/chatService';
 import { runReconciliation } from '../agents/reconciliationAgent';
+import { parseSafeFloat } from '../utils/parsingUtils';
 
 
 const sanitizeModelResponse = (rawText: string): string => {
@@ -120,40 +121,35 @@ export const useAgentOrchestrator = () => {
 
     const runPipeline = useCallback(async (files: File[]) => {
         reset();
-        logger.log('Orchestrator', 'INFO', 'Iniciando pipeline de análise no frontend.');
-        
+        logger.log('Orchestrator', 'INFO', 'Iniciando pipeline de análise.');
+
+        // Frontend Pipeline (existing logic for all files)
         try {
-            // Etapa 1: Importação e OCR
             setAgentStates(prev => ({ ...prev, ocr: { status: 'running', progress: { step: 'Analisando arquivos...', current: 0, total: files.length }}}));
             const importedDocs = await importFiles(files, (current, total) => {
                 setAgentStates(prev => ({...prev, ocr: { ...prev.ocr, progress: { step: `Processando arquivo ${current} de ${total}`, current, total }}}));
             });
             setAgentStates(prev => ({...prev, ocr: { status: 'completed', progress: { step: `Arquivos importados`, current: files.length, total: files.length }}}));
             
-            // Etapa 2: Auditoria Determinística
             setAgentStates(prev => ({...prev, auditor: { status: 'running', progress: { step: `Executando ${importedDocs.length} auditorias...`, current: 0, total: 1 }}}));
             let partialReport: any = await runAudit(importedDocs);
             setAgentStates(prev => ({...prev, auditor: { status: 'completed', progress: { step: `Auditoria concluída`, current: 1, total: 1 }}}));
 
-            // Etapa 3: Classificação Heurística
             setAgentStates(prev => ({...prev, classifier: { status: 'running', progress: { step: `Classificando ${partialReport.documents.length} documentos...`, current: 0, total: 1 }}}));
             partialReport = await runClassification(partialReport, classificationCorrections, costCenterCorrections);
             setAgentStates(prev => ({...prev, classifier: { status: 'completed', progress: { step: `Classificação concluída`, current: 1, total: 1 }}}));
 
-            // Etapa 4: Validação Cruzada Determinística
             setAgentStates(prev => ({...prev, crossValidator: { status: 'running', progress: { step: `Comparando documentos...`, current: 0, total: 1 }}}));
             const deterministicCVResults = await runDeterministicCrossValidation(partialReport);
             partialReport.deterministicCrossValidation = deterministicCVResults;
             setAgentStates(prev => ({...prev, crossValidator: { status: 'completed', progress: { step: `Comparação concluída`, current: 1, total: 1 }}}));
             
-            // Etapa 5: Inteligência (IA)
             setAgentStates(prev => ({...prev, intelligence: { status: 'running', progress: { step: `Análise com IA...`, current: 0, total: 1 }}}));
             const aiResults = await runIntelligenceAnalysis(partialReport);
             partialReport.aiDrivenInsights = aiResults.aiDrivenInsights;
             partialReport.crossValidationResults = aiResults.crossValidationResults;
             setAgentStates(prev => ({...prev, intelligence: { status: 'completed', progress: { step: `Análise com IA concluída`, current: 1, total: 1 }}}));
             
-            // Etapa 6: Contabilidade (Sumarização final com IA)
             setAgentStates(prev => ({...prev, accountant: { status: 'running', progress: { step: `Gerando sumário executivo...`, current: 0, total: 1 }}}));
             const finalReport = await runAccountingAnalysis(partialReport);
             setAgentStates(prev => ({...prev, accountant: { status: 'completed', progress: { step: `Relatório finalizado`, current: 1, total: 1 }}}));
@@ -161,7 +157,6 @@ export const useAgentOrchestrator = () => {
             setAuditReport(finalReport);
             setIsPipelineComplete(true);
 
-            // Inicia o chat
             const allItems = finalReport.documents
                 .filter(d => d.status !== 'ERRO' && d.doc.data)
                 .flatMap(d => d.doc.data!);
@@ -177,7 +172,7 @@ export const useAgentOrchestrator = () => {
             setError(errorMessage);
             setPipelineError(true);
             setIsPipelineComplete(true);
-            setAgentStates(initialAgentStates); // Reset states on failure
+            setAgentStates(initialAgentStates);
         }
     }, [reset, classificationCorrections, costCenterCorrections]);
 

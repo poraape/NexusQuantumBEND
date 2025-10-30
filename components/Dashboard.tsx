@@ -99,6 +99,10 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconc
 
         for (const item of allItems) {
             const value = parseSafeFloat(item.produto_valor_total);
+            if (Number.isNaN(value)) {
+                continue;
+            }
+
             totalProductValue += value;
 
             const originUf = item.emitente_uf || 'SP';
@@ -128,7 +132,10 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconc
 
         for (const item of allItems) {
             const value = parseSafeFloat(item.produto_valor_total);
-            
+            if (Number.isNaN(value)) {
+                continue;
+            }
+
             const cfop = item.produto_cfop?.toString() || 'N/A';
             cfopData[cfop] = (cfopData[cfop] || 0) + value;
 

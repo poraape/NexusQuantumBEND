@@ -82,7 +82,7 @@ export const runDeterministicCrossValidation = async (
 
         items.forEach(item => {
             const unitPrice = parseSafeFloat(item.produto_valor_unit);
-            if (unitPrice > 0) {
+            if (!Number.isNaN(unitPrice) && unitPrice > 0) {
                 if (unitPrice < minPrice) {
                     minPrice = unitPrice;
                     minPriceItem = item;
