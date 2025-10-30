@@ -44,10 +44,21 @@ const App: React.FC = () => {
   }, [resetOrchestrator]);
 
   const onAddFilesForChat = useCallback((files: File[]) => {
-      // Inicia uma nova análise com os arquivos adicionados
+      if (isPipelineRunning) {
+          const warning = 'Aguarde a conclusão da análise atual antes de adicionar novos arquivos.';
+          logger.log('App', 'WARN', warning);
+          setError(warning);
+          return;
+      }
+
+      if (!files.length) {
+          return;
+      }
+
+      logger.log('App', 'INFO', `Arquivos adicionais recebidos via chat: ${files.map(f => f.name).join(', ')}`);
+      setError('Iniciando nova análise com os arquivos adicionados...');
       handleStartAnalysis(files);
-      setError("Iniciando nova análise com os arquivos adicionados...");
-  }, [handleStartAnalysis, setError]);
+  }, [handleStartAnalysis, isPipelineRunning, setError]);
   
   return (
     <div className="bg-gray-900 text-gray-200 min-h-screen font-sans">
@@ -91,6 +102,7 @@ const App: React.FC = () => {
                     report={auditReport}
                     setError={setError}
                     onAddFiles={onAddFilesForChat}
+                    isPipelineRunning={isPipelineRunning}
                 />
             </div>
           </div>

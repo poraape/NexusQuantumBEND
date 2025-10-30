@@ -48,7 +48,9 @@ A aplicação opera de forma autônoma no navegador, orquestrando tarefas comple
     ```sh
     # .env
     # Se estiver usando Vite
-    VITE_GOOGLE_API_KEY=SUA_CHAVE_DE_API_AQUI
+    VITE_GEMINI_API_KEY=SUA_CHAVE_DE_API_AQUI
+    # Opcional: personalize o host dos dados de idioma do Tesseract
+    # VITE_TESSERACT_LANG_PATH=https://tessdata.projectnaptha.com/4.0.0
     ```
 3.  **Inicie um Servidor de Desenvolvimento:**
    ```bash

@@ -21,6 +21,8 @@ export interface ChatMessage {
   sender: 'user' | 'ai';
   text: string;
   chartData?: ChartData;
+  rawText?: string;
+  parseError?: string;
 }
 
 // FIX: Added ExportType for chat export functionality.

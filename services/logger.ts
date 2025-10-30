@@ -48,8 +48,13 @@ class LoggerService {
   };
   
   clear = () => {
+    if (this.logs.length === 0) {
+        return;
+    }
+
     this.logs = [];
-    this.log('Logger', 'INFO', 'Log cache cleared.');
+    // Evite gerar uma nova entrada de log ao limpar o cache para não poluir métricas.
+    console.info('[Logger] Cache limpo.');
     this.notifySubscribers();
   }
 

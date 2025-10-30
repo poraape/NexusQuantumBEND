@@ -8,9 +8,11 @@ import dayjs from 'dayjs';
 import JSZip, { type JSZipObject } from 'jszip';
 import Papa from 'papaparse';
 
-// Set up PDF.js worker
+// Set up PDF.js worker using assets empacotados localmente pelo bundler
 import * as pdfjsLib from 'pdfjs-dist';
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://aistudiocdn.com/pdfjs-dist@^4.8.69/build/pdf.worker.mjs`;
+import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.mjs?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 
 // --- Helper Functions ---

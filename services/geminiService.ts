@@ -1,7 +1,25 @@
 import { GoogleGenAI, Chat, Type } from "@google/genai";
 import { logger } from "./logger";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+let aiClient: GoogleGenAI | null = null;
+
+const resolveApiKey = (): string => {
+    const key = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!key) {
+        const message = 'A variável de ambiente VITE_GEMINI_API_KEY não foi configurada. Defina-a antes de executar a análise.';
+        logger.log('geminiService', 'ERROR', message);
+        throw new Error(message);
+    }
+    return key;
+};
+
+const getClient = (): GoogleGenAI => {
+    if (!aiClient) {
+        const apiKey = resolveApiKey();
+        aiClient = new GoogleGenAI({ apiKey });
+    }
+    return aiClient;
+};
 
 // A type for the schema definition to avoid using `any`
 export type ResponseSchema = {
@@ -32,9 +50,12 @@ export async function generateJSON<T = any>(
     maxRetries = 3
 ): Promise<T> {
     let attempt = 0;
+    let lastResponseText: string | null = null;
     while(attempt <= maxRetries) {
+        lastResponseText = null;
         try {
-            const response = await ai.models.generateContent({
+            const client = getClient();
+            const response = await client.models.generateContent({
                 model: model,
                 contents: prompt,
                 config: {
@@ -47,9 +68,10 @@ export async function generateJSON<T = any>(
             if (!text) {
                  throw new Error("A IA retornou uma resposta vazia.");
             }
-            
+
             // Clean up potential markdown wrappers from the response text
             const cleanedText = text.trim().replace(/^```json\n?/, '').replace(/\n?```$/, '');
+            lastResponseText = cleanedText;
             return JSON.parse(cleanedText) as T;
 
         } catch (e) {
@@ -69,7 +91,10 @@ export async function generateJSON<T = any>(
                 logger.log('geminiService', 'ERROR', `Máximo de tentativas de limite de taxa atingido.`);
                 throw new Error('Cota da API excedida. Por favor, tente novamente mais tarde.');
             } else {
-                 logger.log('geminiService', 'ERROR', `Falha na geração de JSON com o modelo ${model}.`, { error: e });
+                 logger.log('geminiService', 'ERROR', `Falha na geração de JSON com o modelo ${model}.`, {
+                     error: e,
+                     rawResponse: lastResponseText,
+                 });
                  if (e instanceof SyntaxError) {
                      // Pass the malformed text in the error for better debugging
                      throw new SyntaxError(`A resposta da IA não era um JSON válido: ${e.message}`);
@@ -97,7 +122,8 @@ export function createChatSession(
     schema: ResponseSchema,
     history?: any[]
 ): Chat {
-    return ai.chats.create({
+    const client = getClient();
+    return client.chats.create({
         model,
         history,
         config: {

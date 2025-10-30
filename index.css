@@ -1,0 +1,44 @@
+@import url('https://rsms.me/inter/inter.css');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.code-block {
+  @apply bg-gray-900 rounded-lg border border-gray-700 overflow-hidden mt-3 mb-3;
+}
+
+.code-block-header {
+  @apply flex items-center justify-between bg-gray-700 px-3 py-1 text-xs text-gray-300;
+}
+
+.code-block-header button {
+  @apply bg-transparent border-0 text-gray-400 cursor-pointer p-1 rounded;
+}
+
+.code-block-header button:hover {
+  @apply bg-gray-600 text-gray-100;
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  overflow-x: auto;
+}
+
+.token-punctuation { color: #89ddff; }
+.token-string { color: #c3e88d; }
+.token-number { color: #f78c6c; }
+.token-boolean { color: #f78c6c; }
+.token-key { color: #c792ea; }
+.token-null { color: #f78c6c; }
+.token-comment { color: #546e7a; font-style: italic; }
