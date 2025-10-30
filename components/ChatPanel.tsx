@@ -14,9 +14,19 @@ interface ChatPanelProps {
   report: AuditReport;
   setError: (message: string | null) => void;
   onAddFiles: (files: File[]) => void;
+  isPipelineRunning: boolean;
 }
 
-const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStreaming, onStopStreaming, report, setError, onAddFiles }) => {
+const ChatPanel: React.FC<ChatPanelProps> = ({
+  messages,
+  onSendMessage,
+  isStreaming,
+  onStopStreaming,
+  report,
+  setError,
+  onAddFiles,
+  isPipelineRunning,
+}) => {
   const [input, setInput] = useState('');
   const [isExporting, setIsExporting] = useState<ExportType | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -27,6 +37,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
     "Existe alguma oportunidade de otimização fiscal nos dados?",
   ]);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
+  const suggestionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
@@ -53,29 +64,38 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
   
   // Efeito para gerar sugestões dinâmicas
   useEffect(() => {
-    const generateSuggestions = async () => {
-        if (isStreaming || isGeneratingSuggestions || messages.length < 2 || messages[messages.length - 1].sender !== 'ai') {
-            return;
-        }
+    if (suggestionTimeoutRef.current) {
+        clearTimeout(suggestionTimeoutRef.current);
+        suggestionTimeoutRef.current = null;
+    }
 
+    if (isStreaming || isGeneratingSuggestions || messages.length < 2 || messages[messages.length - 1].sender !== 'ai') {
+        return;
+    }
+
+    suggestionTimeoutRef.current = setTimeout(async () => {
         setIsGeneratingSuggestions(true);
         try {
             const lastMessages = messages.slice(-2).map(m => ({ sender: m.sender, text: m.text }));
             const newSuggestions = await generateSuggestedQuestions(lastMessages, report.summary);
-            
-            if (newSuggestions && newSuggestions.length > 0) {
+
+            if (Array.isArray(newSuggestions) && newSuggestions.length > 0) {
                 setSuggestedQuestions(newSuggestions);
             }
         } catch (error) {
             console.error("Failed to generate dynamic suggestions:", error);
-            // Silently fail, keep old suggestions
         } finally {
             setIsGeneratingSuggestions(false);
         }
-    };
+    }, 1200);
 
-    generateSuggestions();
-  }, [messages, isStreaming, report, isGeneratingSuggestions]);
+    return () => {
+        if (suggestionTimeoutRef.current) {
+            clearTimeout(suggestionTimeoutRef.current);
+            suggestionTimeoutRef.current = null;
+        }
+    };
+  }, [messages, isStreaming, report.summary, isGeneratingSuggestions]);
 
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -87,6 +107,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isPipelineRunning) {
+        setError('Aguarde a conclusão da análise atual antes de anexar novos arquivos.');
+        return;
+    }
+
     if (e.target.files && e.target.files.length > 0) {
         onAddFiles(Array.from(e.target.files));
         e.target.value = '';
@@ -192,9 +217,9 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={isStreaming}
+            disabled={isStreaming || isPipelineRunning}
             className="p-2.5 text-gray-400 hover:text-white transition-colors rounded-full hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Adicionar mais arquivos à análise"
+            title={isPipelineRunning ? 'Processo de análise em andamento' : 'Adicionar mais arquivos à análise'}
           >
             <PaperClipIcon className="w-5 h-5" />
           </button>

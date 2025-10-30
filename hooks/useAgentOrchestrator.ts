@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Chat } from '@google/genai';
-import type { ChatMessage, AuditReport, ClassificationResult, AgentStates, ReconciliationResult, AuditedDocument } from '../types';
+import type { ChatMessage, AuditReport, ClassificationResult, AgentStates, AgentState, ReconciliationResult, AuditedDocument } from '../types';
 import { logger } from '../services/logger';
 import { importFiles, importBankFiles } from '../utils/importPipeline';
 import { runAudit } from '../agents/auditorAgent';
@@ -11,6 +11,44 @@ import { runDeterministicCrossValidation } from '../utils/fiscalCompare';
 import { startChat } from '../services/chatService';
 import { runReconciliation } from '../agents/reconciliationAgent';
 
+
+const sanitizeModelResponse = (rawText: string): string => {
+    return rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+};
+
+const parseChatResponse = (rawText: string) => {
+    const cleaned = sanitizeModelResponse(rawText);
+    try {
+        const parsed = JSON.parse(cleaned);
+        if (typeof parsed !== 'object' || parsed === null) {
+            throw new Error('Objeto JSON vazio ou inválido.');
+        }
+
+        const text = typeof parsed.text === 'string' && parsed.text.trim().length > 0
+            ? parsed.text
+            : cleaned;
+
+        return {
+            parsed: true,
+            text,
+            chartData: typeof parsed.chartData === 'object' ? parsed.chartData : undefined,
+            error: undefined as string | undefined,
+        };
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.log('Chat', 'ERROR', 'Falha ao interpretar a resposta da IA como JSON.', {
+            error: errorMessage,
+            rawResponse: rawText,
+        });
+
+        return {
+            parsed: false,
+            text: cleaned,
+            chartData: undefined,
+            error: errorMessage,
+        };
+    }
+};
 
 const initialAgentStates: AgentStates = {
     ocr: { status: 'pending', progress: { step: 'Aguardando arquivos', current: 0, total: 0 } },
@@ -53,9 +91,10 @@ export const useAgentOrchestrator = () => {
     const [isPipelineComplete, setIsPipelineComplete] = useState(false);
     const [classificationCorrections, setClassificationCorrections] = useState<Record<string, ClassificationResult['operationType']>>({});
     const [costCenterCorrections, setCostCenterCorrections] = useState<Record<string, string>>({});
-    
+
     const chatSessionRef = useRef<Chat | null>(null);
-    
+    const storageAvailableRef = useRef(true);
+
     useEffect(() => {
         try {
             const storedClassCorrections = localStorage.getItem(CLASSIFICATION_CORRECTIONS_KEY);
@@ -65,6 +104,7 @@ export const useAgentOrchestrator = () => {
             if (storedCostCenterCorrections) setCostCenterCorrections(JSON.parse(storedCostCenterCorrections));
         } catch (e) {
             logger.log('Orchestrator', 'ERROR', 'Falha ao carregar correções do localStorage.', { error: e });
+            storageAvailableRef.current = false;
         }
     }, []);
 
@@ -204,18 +244,25 @@ export const useAgentOrchestrator = () => {
     
             // Once streaming is complete, parse the full text for chart data
             if (fullResponseText) {
-                 const parsedResponse = JSON.parse(fullResponseText);
-                 setMessages(prev => prev.map(msg =>
+                const { parsed, text: finalText, chartData, error: parseError } = parseChatResponse(fullResponseText);
+
+                setMessages(prev => prev.map(msg =>
                     msg.id === aiMessageId ? {
                         ...msg,
-                        text: parsedResponse.text,
-                        chartData: parsedResponse.chartData || undefined
+                        text: finalText,
+                        chartData,
+                        rawText: fullResponseText,
+                        parseError,
                     } : msg
-                 ));
+                ));
+
+                if (!parsed && parseError) {
+                    setError('A resposta da IA não estava em JSON válido. Exibindo o conteúdo bruto retornado.');
+                }
             } else {
                  throw new Error("A IA retornou uma resposta vazia.");
             }
-    
+
         } catch (err) {
             const finalMessage = getDetailedErrorMessage(err);
             setError(finalMessage);
@@ -240,10 +287,13 @@ export const useAgentOrchestrator = () => {
         
         const newCorrections = { ...classificationCorrections, [docName]: newClassification };
         setClassificationCorrections(newCorrections);
-        try {
-            localStorage.setItem(CLASSIFICATION_CORRECTIONS_KEY, JSON.stringify(newCorrections));
-        } catch(e) {
-            logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção de classificação no localStorage.`, { error: e });
+        if (storageAvailableRef.current) {
+            try {
+                localStorage.setItem(CLASSIFICATION_CORRECTIONS_KEY, JSON.stringify(newCorrections));
+            } catch(e) {
+                storageAvailableRef.current = false;
+                logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção de classificação no localStorage.`, { error: e });
+            }
         }
     }, [classificationCorrections]);
     
@@ -261,16 +311,21 @@ export const useAgentOrchestrator = () => {
 
         const newCorrections = { ...costCenterCorrections, [docName]: newCostCenter };
         setCostCenterCorrections(newCorrections);
-        try {
-            localStorage.setItem(COST_CENTER_CORRECTIONS_KEY, JSON.stringify(newCorrections));
-        } catch(e) {
-            logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção de centro de custo no localStorage.`, { error: e });
+        if (storageAvailableRef.current) {
+            try {
+                localStorage.setItem(COST_CENTER_CORRECTIONS_KEY, JSON.stringify(newCorrections));
+            } catch(e) {
+                storageAvailableRef.current = false;
+                logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção de centro de custo no localStorage.`, { error: e });
+            }
         }
     }, [costCenterCorrections]);
 
     const handleStopStreaming = useCallback(() => {
         logger.log('Orchestrator', 'WARN', 'A parada de streaming não é suportada na arquitetura atual.');
     }, []);
+
+    const isAnyAgentRunning = (Object.values(agentStates) as AgentState[]).some(state => state.status === 'running');
 
     return {
         agentStates,
@@ -279,7 +334,7 @@ export const useAgentOrchestrator = () => {
         messages,
         isStreaming,
         error: error,
-        isPipelineRunning: !isPipelineComplete && Object.values(agentStates).some(s => s.status === 'running'),
+        isPipelineRunning: !isPipelineComplete && isAnyAgentRunning,
         isPipelineComplete,
         pipelineError,
         runPipeline,

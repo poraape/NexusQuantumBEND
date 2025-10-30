@@ -62,6 +62,11 @@ const ChatMessageContent: React.FC<ChatMessageContentProps> = ({ message, isStre
         <div className="prose prose-sm prose-invert max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-table:my-2 prose-th:px-2 prose-th:py-1 prose-th:border prose-th:border-gray-600 prose-td:px-2 prose-td:py-1 prose-td:border prose-td:border-gray-600">
            {isStreaming ? <LoadingSpinnerIcon className="w-5 h-5 animate-spin" /> : parseMarkdown(message.text)}
         </div>
+        {message.parseError && (
+          <p className="mt-2 text-xs text-amber-300">
+            A resposta da IA foi exibida como texto bruto porque o JSON retornado estava inválido.
+          </p>
+        )}
         {message.chartData && (
           <div className="mt-4 bg-gray-800/50 p-4 rounded-md" data-chart-container="true">
             <Chart {...message.chartData} />
