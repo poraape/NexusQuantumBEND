@@ -346,7 +346,6 @@ const generalFallbackConfigs: ParsingConfig[] = [
 const handleCSV = async (file: File): Promise<ImportedDoc> => {
     const buffer = await readFileAsBuffer(file);
     let configsToTry: ParsingConfig[] = [];
-    let decimalCommaDetected = false;
 
     // Heuristic for delimiter
     const textSample = new TextDecoder('utf-8').decode(buffer.slice(0, 2048));
@@ -367,15 +366,6 @@ const handleCSV = async (file: File): Promise<ImportedDoc> => {
             const detectedDelimiter = consistentDelimiters.sort((a, b) => b.count - a.count)[0].delimiter;
             logger.log('ImportPipeline', 'INFO', `Heurística detectou o delimitador: '${detectedDelimiter}'`);
             
-            // Check for comma decimal
-            if ([';', '|'].includes(detectedDelimiter)) {
-                const commaDecimalRegex = new RegExp(`\d+,\d{2}(?!\d)`);
-                if (commaDecimalRegex.test(textSample)) {
-                    decimalCommaDetected = true;
-                    logger.log('ImportPipeline', 'INFO', 'Heurística detectou possível uso de vírgula como decimal.');
-                }
-            }
-
             configsToTry.push({ encoding: 'utf-8', delimiter: detectedDelimiter });
             configsToTry.push({ encoding: 'windows-1252', delimiter: detectedDelimiter });
         }
@@ -390,6 +380,12 @@ const handleCSV = async (file: File): Promise<ImportedDoc> => {
     
     configsToTry.push(...generalFallbackConfigs);
     configsToTry = [...new Map(configsToTry.map(item => [JSON.stringify(item), item])).values()];
+
+    const numericFields = [
+        'produto_valor_total', 'valor_total_nfe', 'produto_qtd', 'produto_valor_unit',
+        'produto_valor_icms', 'produto_valor_pis', 'produto_valor_cofins', 'produto_valor_iss',
+        'produto_base_calculo_icms'
+    ];
 
     for (const config of configsToTry) {
         try {
@@ -410,21 +406,20 @@ const handleCSV = async (file: File): Promise<ImportedDoc> => {
             
             const normalizedData = normalizeHeadersToCanonical(data, file);
 
-            if (validateParsedData(normalizedData, config)) {
-                logger.log('ImportPipeline', 'INFO', `Validação bem-sucedida para ${file.name} com config ${JSON.stringify({encoding: config.encoding, delimiter: config.delimiter})}.`);
-                
-                if (decimalCommaDetected) {
-                    // Post-normalization of numeric values
-                    normalizedData.forEach(row => {
-                        for (const key in row) {
-                            if (typeof row[key] === 'string' && row[key].includes(',')) {
-                                row[key] = parseSafeFloat(row[key]);
-                            }
-                        }
-                    });
+            // Apply parseSafeFloat to all numeric fields after normalization
+            const processedData = normalizedData.map(row => {
+                const newRow = { ...row };
+                for (const field of numericFields) {
+                    if (newRow[field] !== undefined && typeof newRow[field] === 'string') {
+                        newRow[field] = parseSafeFloat(newRow[field]);
+                    }
                 }
+                return newRow;
+            });
 
-                return { kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: normalizedData, raw: file };
+            if (validateParsedData(processedData, config)) {
+                logger.log('ImportPipeline', 'INFO', `Validação bem-sucedida para ${file.name} com config ${JSON.stringify({encoding: config.encoding, delimiter: config.delimiter})}.`);
+                return { kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: processedData, raw: file };
             }
         } catch (e) {
             logger.log('ImportPipeline', 'WARN', `Falha ao decodificar/parsear ${file.name} com config ${JSON.stringify(config)}`, { error: e instanceof Error ? e.message : e });

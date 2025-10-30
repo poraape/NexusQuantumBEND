@@ -89,7 +89,7 @@ const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Aggre
             const value = parseSafeFloat(item[fieldName]);
             if (!Number.isNaN(value)) {
                 (currentNfe as any)[target] += value;
-                nValidos++;
+                // nValidos++; // Removed from here
                 if (amostraValores[fieldName] && amostraValores[fieldName].length < 5) {
                     amostraValores[fieldName].push(value);
                 }
@@ -106,7 +106,16 @@ const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Aggre
             const nfeTotal = parseSafeFloat(item.valor_total_nfe);
             if (!Number.isNaN(nfeTotal)) {
                 currentNfe.officialNfeTotal = nfeTotal;
+                // nValidos++; // Removed from here
             }
+        }
+    }
+
+    // Recalculate nValidos based on aggregated Nfe data
+    nValidos = 0;
+    for (const nfe of nfeAggregates.values()) {
+        if (nfe.officialNfeTotal > 0 || nfe.totalProductValue > 0 || nfe.totalICMS > 0 || nfe.totalPIS > 0 || nfe.totalCOFINS > 0 || nfe.totalISS > 0) {
+            nValidos++;
         }
     }
 
