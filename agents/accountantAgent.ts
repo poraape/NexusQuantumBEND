@@ -106,7 +106,9 @@ const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Aggre
             const nfeTotal = parseSafeFloat(item.valor_total_nfe);
             if (!Number.isNaN(nfeTotal)) {
                 currentNfe.officialNfeTotal = nfeTotal;
-                // nValidos++; // Removed from here
+                if (amostraValores.valor_total_nfe && amostraValores.valor_total_nfe.length < 5) {
+                    amostraValores.valor_total_nfe.push(nfeTotal);
+                }
             }
         }
     }
