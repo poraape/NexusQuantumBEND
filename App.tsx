@@ -12,12 +12,15 @@ import LogsPanel from './components/LogsPanel';
 import Dashboard from './components/Dashboard';
 import type { AuditReport } from './types';
 import IncrementalInsights from './components/IncrementalInsights';
+import Login from './components/Login';
+import { useAuth } from './hooks/useAuth';
 
 export type ExportType = 'md' | 'html' | 'pdf' | 'docx' | 'sped' | 'xlsx' | 'json';
 type PipelineStep = 'UPLOAD' | 'PROCESSING' | 'COMPLETE' | 'ERROR';
 type ActiveView = 'report' | 'dashboard' | 'comparative';
 
 const App: React.FC = () => {
+    const { token, login, logout, error: authError } = useAuth();
     const [isExporting, setIsExporting] = useState<ExportType | null>(null);
     const [pipelineStep, setPipelineStep] = useState<PipelineStep>('UPLOAD');
     const [showLogs, setShowLogs] = useState(false);
@@ -26,11 +29,10 @@ const App: React.FC = () => {
     const [processedFiles, setProcessedFiles] = useState<File[]>([]);
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
 
-
     const {
         agentStates,
         auditReport,
-        setAuditReport, // from useAgentOrchestrator
+        setAuditReport,
         messages,
         isStreaming,
         error,
@@ -51,13 +53,12 @@ const App: React.FC = () => {
         }
     }, [auditReport]);
 
-
     const exportableContentRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
         if (isPipelineRunning) {
             setPipelineStep('PROCESSING');
-            setActiveView('report'); // Reset to report view on new run
+            setActiveView('report');
         }
     }, [isPipelineRunning]);
 
@@ -146,6 +147,10 @@ const App: React.FC = () => {
             setIsExporting(null);
         }
     };
+
+    if (!token) {
+        return <Login onLogin={login} error={authError} />;
+    }
     
     const renderContent = () => {
         switch (pipelineStep) {
@@ -166,8 +171,7 @@ const App: React.FC = () => {
                 return (
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-8 items-start">
                         <div className={`flex-col gap-6 lg:gap-8 ${isPanelCollapsed ? 'hidden' : 'flex'}`}>
-                            {/* View Switcher */}
-                             <div className="flex items-center gap-2 bg-gray-800 p-1.5 rounded-lg">
+                            <div className="flex items-center gap-2 bg-gray-800 p-1.5 rounded-lg">
                                 <button onClick={() => setActiveView('report')} className={`flex-1 py-2 px-4 rounded-md text-sm font-semibold transition-colors ${activeView === 'report' ? 'bg-blue-600 text-white' : 'hover:bg-gray-700'}`}>
                                     Relatório de Análise
                                 </button>
@@ -224,6 +228,7 @@ const App: React.FC = () => {
                 onToggleLogs={() => setShowLogs(!showLogs)}
                 isPanelCollapsed={isPanelCollapsed}
                 onTogglePanel={() => setIsPanelCollapsed(!isPanelCollapsed)}
+                onLogout={logout} 
             />
             <main className="container mx-auto p-4 md:p-6 lg:p-8">
                 {renderContent()}

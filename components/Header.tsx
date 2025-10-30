@@ -1,7 +1,7 @@
 import React from 'react';
-import { DownloadIcon, LoadingSpinnerIcon, DocumentTextIcon, FileInfoIcon, PanelLayoutIcon } from './icons';
+import { DownloadIcon, LoadingSpinnerIcon, DocumentTextIcon, FileInfoIcon, PanelLayoutIcon, LogoutIcon } from './icons';
 import type { ExportType } from '../App';
-import LogoIcon from './LogoIcon'; // Importa o novo ícone
+import LogoIcon from './LogoIcon';
 
 interface HeaderProps {
     onReset: () => void;
@@ -12,9 +12,10 @@ interface HeaderProps {
     onToggleLogs: () => void;
     isPanelCollapsed?: boolean;
     onTogglePanel?: () => void;
+    onLogout?: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ onReset, showExports, showSpedExport, isExporting, onExport, onToggleLogs, isPanelCollapsed, onTogglePanel }) => {
+const Header: React.FC<HeaderProps> = ({ onReset, showExports, showSpedExport, isExporting, onExport, onToggleLogs, isPanelCollapsed, onTogglePanel, onLogout }) => {
   const exportOptions: { type: ExportType, label: string, icon: React.ReactNode }[] = [
       { type: 'pdf', label: 'PDF', icon: <span className="font-bold text-sm">P</span> },
       { type: 'docx', label: 'DOCX', icon: <DocumentTextIcon className="w-4 h-4" /> },
@@ -81,7 +82,6 @@ const Header: React.FC<HeaderProps> = ({ onReset, showExports, showSpedExport, i
                     </button>
                 )}
 
-
                  <button
                     onClick={onToggleLogs}
                     className="p-2 bg-gray-700 hover:bg-gray-600 rounded-md transition-colors w-9 h-9 flex items-center justify-center"
@@ -89,6 +89,16 @@ const Header: React.FC<HeaderProps> = ({ onReset, showExports, showSpedExport, i
                 >
                     <FileInfoIcon className="w-5 h-5"/>
                 </button>
+
+                {onLogout && (
+                    <button
+                        onClick={onLogout}
+                        className="p-2 bg-red-600 hover:bg-red-500 rounded-md transition-colors w-9 h-9 flex items-center justify-center"
+                        title="Sair"
+                    >
+                        <LogoutIcon className="w-5 h-5"/>
+                    </button>
+                )}
             </div>
         </div>
       </div>

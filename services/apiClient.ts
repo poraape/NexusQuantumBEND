@@ -3,9 +3,47 @@
 import type { AgentStates, AuditReport, ChatMessage, ClassificationResult } from '../types';
 import { logger } from './logger';
 
-const API_BASE_URL = 'http://localhost:8000'; // Assuming the backend runs on port 8000
+const API_BASE_URL = 'http://localhost:8000/api/v1';
+
+let authToken: string | null = null;
+
+export const setAuthToken = (token: string | null) => {
+    authToken = token;
+};
 
 class ApiClient {
+    private getHeaders(isFormData: boolean = false): HeadersInit {
+        const headers: HeadersInit = {};
+        if (authToken) {
+            headers['Authorization'] = `Bearer ${authToken}`;
+        }
+        if (!isFormData) {
+            headers['Content-Type'] = 'application/json';
+        }
+        return headers;
+    }
+
+    async login(username: string, password: string): Promise<{ access_token: string }> {
+        logger.log('ApiClient', 'INFO', `Tentando login para o usuário ${username}.`);
+        const formData = new URLSearchParams();
+        formData.append('username', username);
+        formData.append('password', password);
+
+        const response = await fetch(`${API_BASE_URL}/auth/token`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: formData.toString(),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ detail: 'Erro de autenticação desconhecido' }));
+            throw new Error(errorData.detail || 'Falha no login.');
+        }
+        return response.json();
+    }
+
     async startAnalysis(files: File[]): Promise<{ taskId: string }> {
         logger.log('ApiClient', 'INFO', `Iniciando análise para ${files.length} arquivos.`);
         
@@ -15,9 +53,9 @@ class ApiClient {
         });
 
         try {
-            // We are calling the /upload/ endpoint of the first file, as the new endpoint can handle multiple files
             const response = await fetch(`${API_BASE_URL}/upload/`, {
                 method: 'POST',
+                headers: this.getHeaders(true),
                 body: formData,
             });
 
@@ -27,13 +65,8 @@ class ApiClient {
             }
 
             const result = await response.json();
-            
-            // The backend now processes the file synchronously and returns data
-            // To integrate with the existing polling logic, we can simulate a task ID 
-            // and store the result in session storage.
             const taskId = `task-${Date.now()}`;
             sessionStorage.setItem(taskId, JSON.stringify(result));
-
             return { taskId };
 
         } catch (error) {
@@ -43,21 +76,11 @@ class ApiClient {
     }
 
     async getAnalysisStatus(taskId: string): Promise<{ status: 'PENDING' | 'PROCESSING' | 'COMPLETE' | 'ERROR', progress: AgentStates, reportUrl?: string, error?: string }> {
-        // This method is now simplified. Since the backend processes the file upon upload,
-        // we can consider the analysis "COMPLETE" as soon as we have a result.
-        // The polling mechanism in the frontend will call this, and we'll just return the final state.
-        
         const result = sessionStorage.getItem(taskId);
-
         if (!result) {
-            return Promise.resolve({
-                status: 'ERROR',
-                progress: initialAgentStates,
-                error: 'Task ID inválido ou não encontrado.'
-            });
+            return Promise.resolve({ status: 'ERROR', progress: initialAgentStates, error: 'Task ID inválido ou não encontrado.' });
         }
         
-        // Mark all agents as completed
         const finalProgress = { ...initialAgentStates };
         for (const key in finalProgress) {
             finalProgress[key as keyof AgentStates].status = 'completed';
@@ -66,25 +89,18 @@ class ApiClient {
         return Promise.resolve({
             status: 'COMPLETE',
             progress: finalProgress,
-            reportUrl: `/api/reports/${taskId}` // This URL is now a client-side route/identifier
+            reportUrl: `/api/reports/${taskId}`
         });
     }
     
     async getAnalysisReport(reportUrl: string): Promise<AuditReport> {
-        // The report data is fetched from session storage using the task ID from the URL.
         const taskId = reportUrl.split('/').pop();
-        if (!taskId) {
-            throw new Error("ID do relatório inválido.");
-        }
+        if (!taskId) throw new Error("ID do relatório inválido.");
 
         const resultString = sessionStorage.getItem(taskId);
-        if (!resultString) {
-            throw new Error("Dados do relatório não encontrados.");
-        }
+        if (!resultString) throw new Error("Dados do relatório não encontrados.");
 
         const result = JSON.parse(resultString);
-
-        // Adapt the backend response to the AuditReport format the frontend expects.
         const report: AuditReport = {
             summary: {
                 title: `Análise de ${result.filename}`,
@@ -97,17 +113,11 @@ class ApiClient {
                 strategicRecommendations: []
             },
             documents: [], 
-            // For now, we'll place the raw data into a special section of the report.
-            // In a real scenario, this would be processed by other agents.
             rawData: result.data,
             aggregatedMetrics: {},
         };
-
         return Promise.resolve(report);
     }
-
-    // The chat and classification methods remain mocked for now as they are out of scope
-    // for the current task.
 
     async startChatSession(report: AuditReport): Promise<{ sessionId: string }> {
         logger.log('ApiClient', 'INFO', `[MOCK] Iniciando sessão de chat para o relatório "${report.summary.title}".`);
@@ -116,32 +126,20 @@ class ApiClient {
 
     async sendMessageToChat(sessionId: string, message: string): Promise<ChatMessage> {
         logger.log('ApiClient', 'INFO', `[MOCK] Enviando mensagem para a sessão ${sessionId}: "${message}"`);
-        
         let responseText = `Esta é uma resposta simulada do backend para a sua pergunta: "${message}". A lógica real da IA agora reside no servidor.`;
         if (message.toLowerCase().includes('produto')) {
-            responseText = "Resposta do backend: O produto com maior valor foi o 'PROCESSADOR QUÂNTICO I2A2', conforme calculado pelo nosso serviço de análise de dados."
+            responseText = "Resposta do backend: O produto com maior valor foi o 'PROCESSADOR QUÂNTICO I2A2', conforme calculado pelo nosso serviço de análise de dados.";
         }
-        
-        const mockResponse: ChatMessage = {
-            id: `ai-${Date.now()}`,
-            sender: 'ai',
-            text: responseText
-        };
-
-        return new Promise(resolve => {
-            setTimeout(() => resolve(mockResponse), 1500 + Math.random() * 1000);
-        });
+        const mockResponse: ChatMessage = { id: `ai-${Date.now()}`, sender: 'ai', text: responseText };
+        return new Promise(resolve => setTimeout(() => resolve(mockResponse), 1500 + Math.random() * 1000));
     }
 
     async updateClassification(taskId: string, docName: string, newClassification: ClassificationResult['operationType']): Promise<{ success: boolean }> {
         logger.log('ApiClient', 'INFO', `[MOCK] Atualizando classificação para ${docName} para ${newClassification} na task ${taskId}.`);
-        return new Promise(resolve => {
-            setTimeout(() => resolve({ success: true }), 250);
-        });
+        return new Promise(resolve => setTimeout(() => resolve({ success: true }), 250));
     }
 }
 
-// Initial agent states for the UI
 const initialAgentStates: AgentStates = {
     ocr: { status: 'pending', progress: { step: 'Aguardando arquivos', current: 0, total: 0 } },
     auditor: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
@@ -150,6 +148,5 @@ const initialAgentStates: AgentStates = {
     intelligence: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
     accountant: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
 };
-
 
 export const apiClient = new ApiClient();
