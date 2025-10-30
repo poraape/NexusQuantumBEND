@@ -125,7 +125,7 @@ export const runIntelligenceAnalysis = async (
             - Padrões de compra ou venda incomuns.
         2.  **crossValidationResults:** Compare os itens entre si (inter-documentos) e liste as discrepâncias mais significativas. Foque em conflitos no mesmo atributo (ex: NCM diferente para o mesmo produto). Não compare valores totais que naturalmente variam, a menos que a variação seja anômala (o que pertence a 'aiDrivenInsights').
 
-        Responda em Português do Brasil. Sua resposta DEVE ser um único objeto JSON que adere ao schema fornecido. Não inclua texto fora do objeto JSON.
+        Responda em Português do Brasil. Sua resposta DEVE ser um único objeto JSON que adere ao schema fornecido. Garanta que todas as strings dentro do JSON, especialmente nos campos 'description', 'observation' e 'value', tenham aspas duplas internas devidamente escapadas com uma barra invertida (ex: "descrição com \\"aspas\\""). Não inclua texto fora do objeto JSON.
     `;
     
     try {

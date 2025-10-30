@@ -20,18 +20,21 @@ const getBusinessSector = (ncm: string): string => {
 };
 
 type ClassificationCorrections = Record<string, ClassificationResult['operationType']>;
+type CostCenterCorrections = Record<string, string>;
 
 
 /**
  * Heuristically classifies the type of operation for each document in an audit report
  * based on the CFOP codes of its items. It prioritizes user-provided corrections.
  * @param report The initial audit report.
- * @param corrections A map of document names to user-corrected classifications.
+ * @param classificationCorrections A map of document names to user-corrected classifications.
+ * @param costCenterCorrections A map of document names to user-corrected cost centers.
  * @returns A promise that resolves with the enriched AuditReport including classifications.
  */
 export const runClassification = async (
     report: Omit<AuditReport, 'summary'>,
-    corrections: ClassificationCorrections
+    classificationCorrections: ClassificationCorrections,
+    costCenterCorrections: CostCenterCorrections
 ): Promise<Omit<AuditReport, 'summary'>> => {
   console.log(`Classifier Agent: Classifying ${report.documents.length} documents.`);
 
@@ -41,15 +44,21 @@ export const runClassification = async (
     }
 
     // --- Incremental Learning: Check for a user correction first ---
-    const userCorrection = corrections[auditedDoc.doc.name];
-    if (userCorrection && auditedDoc.classification) {
+    const userClassCorrection = classificationCorrections[auditedDoc.doc.name];
+    const userCostCenterCorrection = costCenterCorrections[auditedDoc.doc.name];
+    
+    if ((userClassCorrection || userCostCenterCorrection) && auditedDoc.classification) {
+        const updatedClassification = { ...auditedDoc.classification };
+        if (userClassCorrection) {
+            updatedClassification.operationType = userClassCorrection;
+            updatedClassification.confidence = 1.0; // User correction has 100% confidence
+        }
+        if (userCostCenterCorrection) {
+            updatedClassification.costCenter = userCostCenterCorrection;
+        }
         return {
             ...auditedDoc,
-            classification: {
-                ...auditedDoc.classification,
-                operationType: userCorrection,
-                confidence: 1.0, // User correction has 100% confidence
-            },
+            classification: updatedClassification,
         };
     }
 
@@ -118,6 +127,7 @@ export const runClassification = async (
       operationType: operationTypeMap[primaryType[0]],
       businessSector: primarySector,
       confidence: primaryType[1] / totalItems,
+      costCenter: userCostCenterCorrection || 'Não Alocado', // Apply correction or default
     };
 
     return { ...auditedDoc, classification };

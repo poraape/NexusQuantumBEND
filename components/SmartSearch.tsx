@@ -85,6 +85,7 @@ const SmartSearch: React.FC<SmartSearchProps> = ({ report }) => {
                 -   Forneça um 'summary' textual.
                 -   Se aplicável, retorne uma tabela de 'data'. A primeira linha DEVE ser os cabeçalhos.
                 -   Preencha o array 'references' com suas fontes.
+                -   Garanta que qualquer aspas duplas dentro das strings do JSON (summary, data, references) sejam devidamente escapadas com uma barra invertida.
             `;
 
             const searchResult = await generateJSON<SmartSearchResult>(

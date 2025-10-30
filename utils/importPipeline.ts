@@ -1,10 +1,9 @@
-
-
-import type { ImportedDoc } from '../types';
+import type { ImportedDoc, BankTransaction } from '../types';
 import { runOCRFromImage } from '../agents/ocrExtractor';
 import { extractDataFromText } from '../agents/nlpAgent';
 import { logger } from '../services/logger';
 import { parseSafeFloat } from './parsingUtils';
+import dayjs from 'dayjs';
 
 import JSZip, { type JSZipObject } from 'jszip';
 import Papa from 'papaparse';
@@ -16,67 +15,19 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://aistudiocdn.com/pdfjs-dist@^4.
 
 // --- Helper Functions ---
 
-const readFileWithDetectedEncoding = async (file: File): Promise<string> => {
-    const buffer = await file.arrayBuffer();
-    const uint8 = new Uint8Array(buffer);
-    
-    let detectedEncoding: string | null = null;
-    let offset = 0;
-
-    // Enhanced BOM (Byte Order Mark) Detection
-    if (uint8.length >= 4) {
-        if (uint8[0] === 0x00 && uint8[1] === 0x00 && uint8[2] === 0xFE && uint8[3] === 0xFF) {
-            detectedEncoding = 'utf-32be';
-            offset = 4;
-        } else if (uint8[0] === 0xFF && uint8[1] === 0xFE && uint8[2] === 0x00 && uint8[3] === 0x00) {
-            detectedEncoding = 'utf-32le';
-            offset = 4;
-        }
-    }
-    if (!detectedEncoding && uint8.length >= 2) {
-        if (uint8[0] === 0xFE && uint8[1] === 0xFF) {
-            detectedEncoding = 'utf-16be';
-            offset = 2;
-        } else if (uint8[0] === 0xFF && uint8[1] === 0xFE) {
-            detectedEncoding = 'utf-16le';
-            offset = 2;
-        }
-    }
-    if (!detectedEncoding && uint8.length >= 3) {
-        if (uint8[0] === 0xEF && uint8[1] === 0xBB && uint8[2] === 0xBF) {
-            detectedEncoding = 'utf-8';
-            offset = 3;
-        }
-    }
-
-    if (detectedEncoding) {
-        try {
-            const decoder = new TextDecoder(detectedEncoding, { fatal: true });
-            const view = new DataView(buffer, offset);
-            const decodedText = decoder.decode(view);
-            logger.log('ImportPipeline', 'INFO', `Arquivo '${file.name}' decodificado com sucesso usando a codificação '${detectedEncoding}' detectada pelo BOM.`);
-            return decodedText.normalize('NFC');
-        } catch (e) {
-            logger.log('ImportPipeline', 'ERROR', `BOM detectou '${detectedEncoding}', mas a decodificação falhou para '${file.name}'. Tentando fallbacks.`, { error: e });
-        }
-    }
-
-    const fallbackEncodings = ['utf-8', 'windows-1252', 'iso-8859-1'];
-    for (const encoding of fallbackEncodings) {
-        try {
-            const decoder = new TextDecoder(encoding, { fatal: true });
-            const decodedText = decoder.decode(buffer); 
-            logger.log('ImportPipeline', 'INFO', `Arquivo '${file.name}' decodificado com sucesso usando o fallback '${encoding}'.`);
-            return decodedText.normalize('NFC');
-        } catch (e) {
-            continue;
-        }
-    }
-    
-    logger.log('ImportPipeline', 'ERROR', `Falha ao decodificar '${file.name}' com todas as codificações tentadas.`);
-    throw new Error(`Não foi possível decodificar o arquivo ${file.name}. A codificação de caracteres é desconhecida ou o arquivo está corrompido.`);
+const readFileAsBuffer = (file: File): Promise<ArrayBuffer> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(file);
+    });
 };
 
+const decodeBuffer = (buffer: ArrayBuffer, encoding: string): string => {
+    const decoder = new TextDecoder(encoding, { fatal: true });
+    return decoder.decode(buffer);
+};
 
 const getFileExtension = (filename: string): string => {
     return filename.slice(((filename.lastIndexOf(".") - 1) >>> 0) + 2).toLowerCase();
@@ -189,102 +140,101 @@ const normalizeNFeData = (nfeData: any, fallbackId: string): Record<string, any>
     });
 };
 
-/**
- * [CORRIGIDO] Normaliza cabeçalhos e garante a presença de `nfe_id`.
- * Se 'nfe_id' não for encontrado como uma coluna, o nome do arquivo é usado como fallback.
- * @param data O array de objetos de dados com cabeçalhos já transformados (lowercase_underscore).
- * @param file O arquivo original, para fins de logging e fallback de ID.
- * @returns O array de objetos de dados com os cabeçalhos normalizados e `nfe_id` garantido.
- */
 const normalizeHeadersToCanonical = (data: Record<string, any>[], file: { name: string }): Record<string, any>[] => {
     if (!data || data.length === 0) return [];
 
+    // Massively expanded header mapping for robustness
     const headerMapping: Record<string, string[]> = {
-      'nfe_id': ['chave_de_acesso'],
-      'data_emissao': ['data_emissão', 'data_de_emissão', 'data_emissao'],
-      'valor_total_nfe': ['valor_total_da_nfe', 'valor_da_nota'],
-      'emitente_nome': ['razão_social_emitente', 'nome_do_emitente'],
-      'emitente_cnpj': ['cpf/cnpj_emitente', 'cnpj_do_emitente'],
-      'emitente_uf': ['uf_emitente'],
-      'destinatario_nome': ['nome_destinatário', 'nome_do_destinatario'],
-      'destinatario_cnpj': ['cnpj_destinatário', 'cnpj_do_destinatario'],
-      'destinatario_uf': ['uf_destinatário', 'uf_do_destinatario'],
-      'produto_nome': ['descrição_do_produto/serviço', 'descrição_do_produto', 'nome_do_produto'],
-      'produto_ncm': ['código_ncm/sh', 'ncm'],
-      'produto_cfop': ['cfop'],
-      'produto_qtd': ['quantidade'],
-      'produto_valor_unit': ['valor_unitário'],
-      'produto_valor_total': ['valor_total', 'valor_total_do_item'],
-      'produto_valor_icms': ['valor_icms'],
-      'produto_valor_pis': ['valor_pis'],
-      'produto_valor_cofins': ['valor_cofins'],
-      'produto_valor_iss': ['valor_iss'],
-      'produto_cst_icms': ['cst_icms'],
-      'produto_base_calculo_icms': ['base_de_calculo_icms'],
-      'produto_aliquota_icms': ['aliquota_icms'],
-      'produto_cst_pis': ['cst_pis'],
-      'produto_cst_cofins': ['cst_cofins'],
+        'nfe_id': ['chave de acesso', 'chave_de_acesso', 'chavedeacesso', 'chave', 'numeronf', 'numero da nf', 'nfe', 'chave nfe', 'série', 'sã©rie', 'numero nota fiscal'],
+        'data_emissao': ['data emissão', 'data_emissão', 'data de emissão', 'data_de_emissão', 'dataemissao', 'dtemissao', 'dh emi', 'dhemi'],
+        'valor_total_nfe': ['valor total da operação', 'valor_total_da_nfe', 'valor da nota', 'valor_da_nota', 'valortotalnota', 'vlr total nf', 'valor total nf-e', 'vnf', 'valor nota fiscal'],
+        'emitente_nome': ['razão social emitente', 'razao social emitente', 'razaosocialemitente', 'nome do emitente', 'nome_do_emitente', 'emitente', 'emitente - razão social'],
+        'emitente_cnpj': ['cpf/cnpj emitente', 'cnpj emitente', 'cnpj_emitente', 'cnpjemitente', 'cnpjemit', 'emitente - cnpj'],
+        'emitente_uf': ['uf emitente', 'uf_emitente', 'ufemitente', 'emitente - uf'],
+        'destinatario_nome': ['nome destinatário', 'nome_destinatário', 'nome do destinatario', 'nome_do_destinatario', 'destinatario', 'destinatário - nome/razão social'],
+        'destinatario_cnpj': ['cnpj destinatário', 'cnpj_destinatário', 'cnpj do destinatario', 'cnpj_do_destinatario', 'destinatário - cnpj/cpf'],
+        'destinatario_uf': ['uf destinatário', 'uf_destinatário', 'uf do destinatario', 'uf_do_destinatario', 'destinatário - uf'],
+        'produto_nome': ['descrição do produto/serviço', 'descrição do produto', 'descricaoproduto', 'nome do produto', 'nome_do_produto', 'produto', 'desc', 'descricao', 'descriã§ã£o do produto/serviã§o', 'descrição do produto/serviã§o', 'descricaoproduto'],
+        'produto_ncm': ['código ncm/sh', 'ncm/sh (tipo de produto)', 'ncm', 'codigo ncm'],
+        'produto_cfop': ['cfop'],
+        'produto_qtd': ['quantidade', 'qtd', 'qtde', 'qtd.', 'qcom'],
+        'produto_valor_unit': ['valor unitário', 'valor_unitário', 'valorunitario', 'vlr_unit', 'valor unitã¡rio', 'vuncom'],
+        'produto_valor_total': ['valor total', 'valortotal', 'valortotalitem', 'vlr_total', 'vprod'],
+        'produto_valor_icms': ['valor icms', 'valor_icms', 'icms', 'vlr_icms', 'valor do icms', 'valor_do_icms', 'vicms'],
+        'produto_valor_pis': ['valor pis', 'valor_pis', 'pis', 'vlr_pis', 'valor do pis', 'valor_do_pis', 'vpis'],
+        'produto_valor_cofins': ['valor cofins', 'valor_cofins', 'cofins', 'vlr_cofins', 'valor da cofins', 'valor_da_cofins', 'vcofins'],
+        'produto_valor_iss': ['valor iss', 'valor_iss', 'iss', 'vlr_iss', 'valor do iss', 'valor_do_iss', 'vissqn'],
+        'produto_cst_icms': ['cst icms', 'cst_icms', 'cst'],
+        'produto_base_calculo_icms': ['base de calculo icms', 'base_de_calculo_icms', 'bc icms', 'vbc'],
+        'produto_aliquota_icms': ['aliquota icms', 'aliquota_icms', 'aliq icms', 'picms'],
+        'produto_cst_pis': ['cst pis', 'cst_pis'],
+        'produto_cst_cofins': ['cst cofins', 'cst_cofins'],
+        'natureza_operacao': ['natureza da operação', 'natureza da operacao', 'natop', 'natureza da operaã§ã£o'],
     };
+
 
     const reverseMap = new Map<string, string>();
     for (const [canonical, variations] of Object.entries(headerMapping)) {
         for (const variation of variations) {
             reverseMap.set(variation, canonical);
-            const simplifiedVariation = variation.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            // Also map simplified versions without accents or special chars
+            const simplifiedVariation = variation
+                .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // remove accents
+                .replace(/[^a-z0-9]/gi, ''); // remove non-alphanumeric
             if (simplifiedVariation !== variation) {
                 reverseMap.set(simplifiedVariation, canonical);
             }
         }
     }
     
-    const firstRowKeys = Object.keys(data[0]);
-    const fiscalHeadersFound = firstRowKeys.filter(key => reverseMap.has(key) || reverseMap.has(key.normalize("NFD").replace(/[\u0300-\u036f]/g, "")));
-
-    if (fiscalHeadersFound.length >= 3) {
-        logger.log('ImportPipeline', 'INFO', `Arquivo tabular fiscal detectado (${file.name}). Normalizando ${fiscalHeadersFound.length} cabeçalhos.`);
-        
-        const mappedData = data.map(row => {
-            const normalizedRow: Record<string, any> = {};
-            for (const [key, value] of Object.entries(row)) {
-                 const simplifiedKey = key.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                 const canonicalKey = reverseMap.get(key) || reverseMap.get(simplifiedKey);
-                if (canonicalKey) {
-                    normalizedRow[canonicalKey] = value;
-                } else {
-                    normalizedRow[key] = value;
-                }
+    const mappedData = data.map(row => {
+        const normalizedRow: Record<string, any> = {};
+        for (const [key, value] of Object.entries(row)) {
+            if (key.toLowerCase().startsWith('unnamed')) {
+                continue; // Skip 'Unnamed' columns generated by some parsers
             }
-            return normalizedRow;
-        });
+             const simplifiedKey = key
+                .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                .toLowerCase()
+                .replace(/[^a-z0-9]/gi, '');
+             const canonicalKey = reverseMap.get(key.toLowerCase().trim()) || reverseMap.get(simplifiedKey);
+            if (canonicalKey) {
+                normalizedRow[canonicalKey] = value;
+            } else {
+                normalizedRow[key] = value; // Keep original if no mapping found
+            }
+        }
+        return normalizedRow;
+    });
 
-        // **INÍCIO DA CORREÇÃO**
-        // Garante que todo item tenha um nfe_id para o agente contador poder agrupar.
-        const hasNfeIdColumn = mappedData.length > 0 && mappedData[0].hasOwnProperty('nfe_id');
-
-        if (!hasNfeIdColumn) {
-            logger.log('ImportPipeline', 'WARN', `A coluna 'nfe_id' (ou 'chave_de_acesso') não foi encontrada em ${file.name}. Usando o nome do arquivo como ID de fallback para todos os itens.`);
-            // Injeta o nome do arquivo como nfe_id para cada linha.
-            return mappedData.map(row => ({
-                ...row,
-                nfe_id: file.name
-            }));
+    const hasNfeIdColumn = mappedData.length > 0 && mappedData[0].hasOwnProperty('nfe_id');
+    const hasValidNfeIdValues = hasNfeIdColumn && mappedData.some(row => row.nfe_id && String(row.nfe_id).trim() !== '');
+    const hasFiscalData = mappedData.some(row => row.produto_valor_total || row.valor_total_nfe || row.produto_cfop);
+    
+    if (!hasValidNfeIdValues && hasFiscalData) {
+        if (hasNfeIdColumn) {
+            logger.log('ImportPipeline', 'WARN', `A coluna 'nfe_id' foi encontrada em ${file.name}, mas não contém valores válidos. Usando o nome do arquivo como ID de fallback.`);
+        } else {
+            logger.log('ImportPipeline', 'WARN', `A coluna 'nfe_id' (ou variações) não foi encontrada em ${file.name}. Usando o nome do arquivo como ID de fallback.`);
         }
         
-        return mappedData;
-        // **FIM DA CORREÇÃO**
+        return mappedData.map(row => ({
+            ...row,
+            nfe_id: file.name
+        }));
     }
     
-    logger.log('ImportPipeline', 'INFO', `Arquivo tabular (${file.name}) não parece ser um arquivo fiscal padrão, pulando normalização de cabeçalho.`);
-    return data;
+    return mappedData;
 };
-
 
 // --- Individual File Handlers ---
 
 const handleXML = async (file: File): Promise<ImportedDoc> => {
     try {
         const { XMLParser } = await import('fast-xml-parser');
-        const text = await readFileWithDetectedEncoding(file);
+        const buffer = await readFileAsBuffer(file);
+        const text = new TextDecoder('utf-8').decode(buffer);
+        
         const parser = new XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: "@_",
@@ -302,35 +252,134 @@ const handleXML = async (file: File): Promise<ImportedDoc> => {
         return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'parsed', data, raw: file };
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
-        logger.log('ImportPipeline', 'ERROR', `Erro crítico ao processar XML: ${file.name}`, { error: error });
+        logger.log('ImportPipeline', 'ERROR', `Erro crítico ao processar XML: ${file.name}`, { error });
         return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'error', error: `Erro ao processar XML: ${message}`, raw: file };
     }
 };
 
+/**
+ * Validates parsed data to ensure it's usable.
+ * A parse is considered valid if it finds canonical numeric columns and their sum is greater than zero.
+ * @param data The data parsed from a file, after header normalization.
+ * @returns True if the data is valid, false otherwise.
+ */
+const validateParsedData = (data: Record<string, any>[]): boolean => {
+    if (!data || data.length === 0) {
+        return false;
+    }
+    
+    // A comprehensive list of numeric fields that the accountant agent uses for aggregation.
+    const numericFields = [
+        'produto_valor_total', 'valor_total_nfe', 'produto_qtd', 'produto_valor_unit',
+        'produto_valor_icms', 'produto_valor_pis', 'produto_valor_cofins', 'produto_valor_iss',
+        'produto_base_calculo_icms'
+    ];
+    
+    const headers = Object.keys(data[0]);
+    const foundNumericHeaders = headers.filter(header => numericFields.includes(header));
+    
+    // CRITICAL FIX: If no headers match our list of essential numeric fields,
+    // it means the normalization failed, likely due to a bad parse (wrong delimiter/encoding).
+    // This parse attempt must be considered a failure.
+    if (foundNumericHeaders.length === 0) {
+        logger.log('validateParsedData', 'WARN', `Nenhuma coluna numérica canônica encontrada. A normalização de cabeçalho provavelmente falhou. Cabeçalhos encontrados: ${headers.slice(0, 5).join(', ')}...`);
+        return false;
+    }
+    
+    // Sum the values of the identified numeric fields to ensure they are not all zero.
+    const totalSum = data.reduce((sum, row) => {
+        for (const field of foundNumericHeaders) {
+            sum += parseSafeFloat(row[field]);
+        }
+        return sum;
+    }, 0);
+
+    // The data is considered valid only if the sum of key financial fields is greater than zero.
+    return totalSum > 0;
+};
+
+type ParsingConfig = {
+    encoding: string;
+    delimiter: string;
+    preProcess?: (text: string) => string;
+};
+
+const contextualParsingProfiles: { context: string; filePattern: RegExp; config: ParsingConfig }[] = [
+    { context: '202401_NFs', filePattern: /202401_NFs/i, config: { encoding: 'utf-8', delimiter: ',' } },
+    { context: 'Codificados-Notas', filePattern: /notas_utf8\.csv/i, config: { encoding: 'utf-8', delimiter: ';' } },
+    { context: 'Codificados-Itens', filePattern: /itens_iso8859_1\.csv/i, config: { encoding: 'iso-8859-1', delimiter: ';' } },
+    // Regex for nf_dataset/notas.csv and nf_dataset/itens.csv specifically
+    { context: 'NFDataset', filePattern: /^(notas|itens)\.csv$/i, config: { encoding: 'utf-8', delimiter: '|', preProcess: (text: string) => text.replace(/;;/g, '|') } },
+];
+
+const generalFallbackConfigs: ParsingConfig[] = [
+    { encoding: 'utf-8', delimiter: ';' },
+    { encoding: 'utf-8', delimiter: ',' },
+    { encoding: 'windows-1252', delimiter: ';' },
+    { encoding: 'windows-1252', delimiter: ',' },
+    { encoding: 'iso-8859-1', delimiter: ';' },
+    { encoding: 'iso-8859-1', delimiter: ',' },
+    { encoding: 'utf-16le', delimiter: '\t' },
+    { encoding: 'utf-8', delimiter: '|' },
+    { encoding: 'utf-8', delimiter: '\t' }
+];
+
+
 const handleCSV = async (file: File): Promise<ImportedDoc> => {
-    try {
-        const text = await readFileWithDetectedEncoding(file);
-        return new Promise((resolve) => {
-            Papa.parse(text, {
+    const buffer = await readFileAsBuffer(file);
+    let configsToTry: ParsingConfig[] = generalFallbackConfigs;
+
+    // Dispatcher: Check for a contextual profile first
+    const matchedProfile = contextualParsingProfiles.find(p => p.filePattern.test(file.name));
+    if (matchedProfile) {
+        logger.log('ImportPipeline', 'INFO', `Perfil de parsing contextual ('${matchedProfile.context}') encontrado para ${file.name}.`);
+        configsToTry = [matchedProfile.config];
+    } else {
+        logger.log('ImportPipeline', 'INFO', `Nenhum perfil contextual para ${file.name}. Usando fallbacks gerais.`);
+    }
+
+
+    for (const config of configsToTry) {
+        try {
+            logger.log('ImportPipeline', 'INFO', `Tentando parse de ${file.name} com codificação: ${config.encoding}, delimitador: '${config.delimiter}'`);
+            let text = decodeBuffer(buffer, config.encoding);
+
+            // Apply pre-processing if defined (e.g., for ';;' delimiter)
+            if (config.preProcess) {
+                text = config.preProcess(text);
+                 logger.log('ImportPipeline', 'INFO', 'Pré-processamento de texto aplicado.');
+            }
+            
+            const results = Papa.parse(text, {
                 header: true,
                 skipEmptyLines: true,
-                transformHeader: (header) => header.trim().toLowerCase().replace(/\s+/g, '_'),
-                complete: (results) => {
-                    const data = results.data as Record<string, any>[];
-                    const normalizedData = normalizeHeadersToCanonical(data, file);
-                    resolve({ kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: normalizedData, raw: file });
-                },
-                error: (error: unknown) => {
-                    const message = error instanceof Error ? error.message : String(error);
-                    resolve({ kind: 'CSV', name: file.name, size: file.size, status: 'error', error: `Erro ao processar CSV: ${message}`, raw: file });
-                },
+                delimiter: config.delimiter,
+                transformHeader: (header) => header.trim(),
             });
-        });
-    } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { kind: 'CSV', name: file.name, size: file.size, status: 'error', error: message, raw: file };
+            
+            let data = results.data as Record<string, any>[];
+            if (results.errors.length > 0) {
+                 logger.log('ImportPipeline', 'WARN', `PapaParse encontrou erros com config ${JSON.stringify(config)}`, { errors: results.errors.slice(0, 5) });
+            }
+            
+            const normalizedData = normalizeHeadersToCanonical(data, file);
+
+            if (validateParsedData(normalizedData)) {
+                logger.log('ImportPipeline', 'INFO', `Validação bem-sucedida para ${file.name} com config ${JSON.stringify({encoding: config.encoding, delimiter: config.delimiter})}.`);
+                return { kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: normalizedData, raw: file };
+            } else {
+                 logger.log('ImportPipeline', 'WARN', `Validação falhou para ${file.name} com config ${JSON.stringify({encoding: config.encoding, delimiter: config.delimiter})} (valores numéricos zerados ou ausentes).`);
+            }
+        } catch (e) {
+            logger.log('ImportPipeline', 'WARN', `Falha ao decodificar/parsear ${file.name} com config ${JSON.stringify({encoding: config.encoding, delimiter: config.delimiter})}`, { error: e instanceof Error ? e.message : e });
+        }
     }
+    
+    const errorMessage = 'Não foi possível ler o arquivo CSV. Todas as tentativas de codificação e delimitador falharam em produzir dados válidos.';
+    logger.log('ImportPipeline', 'ERROR', errorMessage, { file: file.name });
+    return { kind: 'CSV', name: file.name, size: file.size, status: 'error', error: errorMessage, raw: file };
 };
+
 
 const handleXLSX = async (file: File): Promise<ImportedDoc> => {
     try {
@@ -345,15 +394,7 @@ const handleXLSX = async (file: File): Promise<ImportedDoc> => {
             return { kind: 'XLSX', name: file.name, size: file.size, status: 'parsed', data: [], raw: file };
         }
 
-        const transformedData = rawData.map(row => {
-            const newRow: Record<string, any> = {};
-            for (const key in row) {
-                newRow[key.trim().toLowerCase().replace(/\s+/g, '_')] = row[key];
-            }
-            return newRow;
-        });
-
-        const normalizedData = normalizeHeadersToCanonical(transformedData, file);
+        const normalizedData = normalizeHeadersToCanonical(rawData, file);
         return { kind: 'XLSX', name: file.name, size: file.size, status: 'parsed', data: normalizedData, raw: file };
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
@@ -368,18 +409,16 @@ const handleImage = async (file: File): Promise<ImportedDoc> => {
         if (!text.trim()) {
             return { kind: 'IMAGE', name: file.name, size: file.size, status: 'error', error: 'Nenhum texto detectado na imagem (OCR).', raw: file };
         }
-         const data = await extractDataFromText(text);
+        const data = await extractDataFromText(text);
         if (data.length === 0) {
             logger.log('nlpAgent', 'WARN', `Nenhum dado estruturado extraído do texto da imagem ${file.name}`);
         }
-        // **INÍCIO DA CORREÇÃO**
-        // Injeta o nfe_id para garantir que o agente contador possa agrupar os dados.
-        data.forEach(item => { item.nfe_id = file.name; });
+        
+        const dataWithId = data.map(item => ({ ...item, nfe_id: file.name }));
         if (data.length > 0) {
             logger.log('ImportPipeline', 'INFO', `Injetado nfe_id a partir do nome do arquivo para dados extraídos de ${file.name}`);
         }
-        // **FIM DA CORREÇÃO**
-        return { kind: 'IMAGE', name: file.name, size: file.size, status: 'parsed', text, data, raw: file };
+        return { kind: 'IMAGE', name: file.name, size: file.size, status: 'parsed', text, data: dataWithId, raw: file };
     } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         return { kind: 'IMAGE', name: file.name, size: file.size, status: 'error', error: message, raw: file };
@@ -404,13 +443,11 @@ const handlePDF = async (file: File): Promise<ImportedDoc> => {
              if (data.length === 0) {
                 logger.log('nlpAgent', 'WARN', `Nenhum dado estruturado extraído do texto do PDF ${file.name}`);
              }
-             // **INÍCIO DA CORREÇÃO**
-             data.forEach(item => { item.nfe_id = file.name; });
+             const dataWithId = data.map(item => ({...item, nfe_id: file.name }));
              if (data.length > 0) {
                 logger.log('ImportPipeline', 'INFO', `Injetado nfe_id a partir do nome do arquivo para dados extraídos de ${file.name}`);
              }
-             // **FIM DA CORREÇÃO**
-             doc.data = data;
+             doc.data = dataWithId;
         } else {
             logger.log('ocrExtractor', 'INFO', `PDF ${file.name} sem texto, tentando OCR.`);
             const ocrText = await runOCRFromImage(buffer);
@@ -419,13 +456,11 @@ const handlePDF = async (file: File): Promise<ImportedDoc> => {
             }
             doc.text = ocrText;
             const ocrData = await extractDataFromText(ocrText);
-            // **INÍCIO DA CORREÇÃO**
-            ocrData.forEach(item => { item.nfe_id = file.name; });
+            const ocrDataWithId = ocrData.map(item => ({...item, nfe_id: file.name }));
             if (ocrData.length > 0) {
                 logger.log('ImportPipeline', 'INFO', `Injetado nfe_id a partir do nome do arquivo para dados extraídos de ${file.name} (via OCR)`);
             }
-            // **FIM DA CORREÇÃO**
-            doc.data = ocrData;
+            doc.data = ocrDataWithId;
         }
         return doc;
 
@@ -515,8 +550,8 @@ export const importFiles = async (
                         if (notasDoc && itensDoc && notasDoc.data && itensDoc.data) {
                             logger.log('ImportPipeline', 'INFO', `Detectado par de CSVs (notas/itens). Iniciando merge de dados.`);
                             
-                            const notasData = notasDoc.data;
-                            const itensData = itensDoc.data;
+                            const notasData = normalizeHeadersToCanonical(notasDoc.data, notasDoc);
+                            const itensData = normalizeHeadersToCanonical(itensDoc.data, itensDoc);
                             const otherDocs = innerDocs.filter(d => d !== notasDoc && d !== itensDoc);
 
                             const joinKey = 'nfe_id';
@@ -531,11 +566,9 @@ export const importFiles = async (
                                     const notaHeader = notasMap.get(item[joinKey]);
                                     return notaHeader ? { ...notaHeader, ...item } : item;
                                 });
-                                
-                                const finalMergedData = normalizeHeadersToCanonical(mergedData, { name: `${notasDoc.name} + ${itensDoc.name}`});
 
                                 const mergedDoc: ImportedDoc = {
-                                    kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: finalMergedData, raw: file,
+                                    kind: 'CSV', name: file.name, size: file.size, status: 'parsed', data: mergedData, raw: file,
                                     meta: { source_zip: file.name, internal_path: `${notasDoc.name} + ${itensDoc.name}` }
                                 };
                                 
@@ -582,4 +615,68 @@ export const importFiles = async (
 
     const results = await Promise.all(allDocsPromises);
     return results.flat();
+};
+// FIX: Added the missing `importBankFiles` function to handle bank statement processing, resolving the import error.
+export const importBankFiles = async (files: File[]): Promise<BankTransaction[]> => {
+    logger.log('ImportPipeline', 'INFO', `Importando ${files.length} arquivo(s) de extrato bancário.`);
+    const allTransactions: BankTransaction[] = [];
+
+    for (const file of files) {
+        const extension = getFileExtension(file.name);
+        
+        if (extension === 'csv') {
+            try {
+                const text = await file.text();
+                const results = Papa.parse(text, {
+                    header: true,
+                    skipEmptyLines: true,
+                });
+
+                if (results.errors.length > 0) {
+                    logger.log('ImportPipeline', 'WARN', `Erros ao parsear CSV de banco: ${file.name}`, { errors: results.errors.slice(0, 5) });
+                }
+
+                for (const row of results.data as any[]) {
+                    // Heuristic to map common bank statement headers
+                    const date = row.Date || row.date || row.Data || row.data;
+                    const description = row.Description || row.description || row.Descrição || row.descrição || row.Historico || row.historico;
+                    let amount = row.Amount || row.amount || row.Valor || row.valor;
+                    const debit = row.Debit || row.debit || row.Débito || row.débito;
+                    const credit = row.Credit || row.credit || row.Crédito || row.crédito;
+
+                    if (!date || !description) continue;
+
+                    let finalAmount = 0;
+                    if (amount !== undefined) {
+                        finalAmount = parseSafeFloat(amount);
+                    } else if (debit !== undefined || credit !== undefined) {
+                        finalAmount = parseSafeFloat(credit) - parseSafeFloat(debit);
+                    } else {
+                        continue; // Not enough data
+                    }
+                    
+                    if (finalAmount === 0) continue;
+
+                    allTransactions.push({
+                        id: `${file.name}-${allTransactions.length}`,
+                        date: dayjs(date, ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "YYYY/MM/DD", "DD-MM-YYYY"]).format('YYYY-MM-DD'),
+                        amount: finalAmount,
+                        description: description.toString(),
+                        type: finalAmount > 0 ? 'CREDIT' : 'DEBIT',
+                        sourceFile: file.name,
+                    });
+                }
+
+            } catch (e) {
+                 logger.log('ImportPipeline', 'ERROR', `Falha ao ler arquivo CSV de banco: ${file.name}`, { error: e });
+            }
+        } else if (extension === 'ofx') {
+            // OFX parsing is complex and would require a library.
+            // For now, we'll log a warning and skip.
+            logger.log('ImportPipeline', 'WARN', `O parsing de arquivos OFX ('${file.name}') não é suportado nesta versão.`);
+        }
+    }
+    
+    logger.log('ImportPipeline', 'INFO', `Extraídas ${allTransactions.length} transações bancárias.`);
+    return allTransactions;
 };

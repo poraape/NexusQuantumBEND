@@ -30,8 +30,15 @@ const CrossValidationPanel: React.FC<CrossValidationPanelProps> = ({ results }) 
                 </thead>
                 <tbody className="divide-y divide-gray-700/50">
                     {results.map((result, index) => {
-                        const docA = result.documents[0];
-                        const docB = result.documents[1];
+                        const docA = result.documents?.[0];
+                        const docB = result.documents?.[1];
+
+                        // FIX: Add a guard to prevent rendering a row if the AI returns
+                        // a malformed result with less than 2 documents for comparison.
+                        if (!docA || !docB) {
+                            return null;
+                        }
+
                         return (
                             <React.Fragment key={index}>
                                 <tr className="hover:bg-gray-600/20">

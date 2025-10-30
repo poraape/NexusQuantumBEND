@@ -6,10 +6,14 @@ import SmartSearch from './SmartSearch';
 import { parseSafeFloat } from '../utils/parsingUtils';
 import AnalysisDisplay from './AnalysisDisplay';
 import dayjs from 'dayjs';
+import { UploadIcon, LoadingSpinnerIcon } from './icons';
+import ReconciliationView from './ReconciliationView';
 
 interface DashboardProps {
     report: AuditReport;
     dateFilter: { start: string; end: string };
+    onStartReconciliation: (files: File[]) => void;
+    isReconciliationRunning: boolean;
 }
 
 // Tabela de alíquotas de ICMS interestadual.
@@ -59,10 +63,11 @@ interface MemoizedChartData {
     ufChart: ChartData;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter }) => {
+const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconciliation, isReconciliationRunning }) => {
     const [simulationRate, setSimulationRate] = useState<number>(18.0);
     const [baseValueForSim, setBaseValueForSim] = useState<number>(0);
     const [referenceRate, setReferenceRate] = useState<number>(18.0);
+    const [bankFiles, setBankFiles] = useState<File[]>([]);
 
     const filteredDocuments = useMemo(() => {
         if (!dateFilter.start && !dateFilter.end) {
@@ -160,6 +165,19 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter }) => {
             },
         };
     }, [filteredDocuments]);
+    
+    const handleBankFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files) {
+            setBankFiles(Array.from(e.target.files));
+        }
+    }
+    
+    const handleStartReconciliation = () => {
+        if (bankFiles.length > 0) {
+            onStartReconciliation(bankFiles);
+            setBankFiles([]);
+        }
+    }
 
     return (
         <div className="bg-gray-800 p-6 rounded-lg shadow-lg animate-fade-in space-y-8">
@@ -177,35 +195,84 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter }) => {
                    </div>
                 </div>
             </div>
+            
+            <div>
+                <h2 className="text-xl font-bold text-gray-200 mb-4 border-t border-gray-700 pt-8">Conciliação Bancária</h2>
+                <div className="bg-gray-700/30 p-4 rounded-lg space-y-4">
+                     {!isReconciliationRunning && !report.reconciliationResult && (
+                        <>
+                             <p className="text-xs text-gray-400 text-center">
+                                Faça o upload de um ou mais extratos bancários (.OFX, .CSV) para cruzar com os documentos fiscais processados.
+                            </p>
+                            <div className="flex items-center justify-center gap-3">
+                                <label htmlFor="bank-file-upload" className="cursor-pointer bg-gray-700 hover:bg-gray-600 text-gray-300 font-bold py-2 px-4 rounded-lg transition-colors flex items-center gap-2">
+                                    <UploadIcon className="w-5 h-5" />
+                                    <span>Selecionar Extrato(s)</span>
+                                </label>
+                                <input id="bank-file-upload" type="file" multiple accept=".ofx,.csv" className="hidden" onChange={handleBankFiles}/>
+                                {bankFiles.length > 0 && (
+                                    <span className="text-sm text-gray-400">{bankFiles.length} arquivo(s) selecionado(s).</span>
+                                )}
+                            </div>
+                            {bankFiles.length > 0 && (
+                                <button
+                                    onClick={handleStartReconciliation}
+                                    disabled={isReconciliationRunning}
+                                    className="w-full mt-2 bg-teal-600 hover:bg-teal-500 text-white font-bold py-2 px-4 rounded-lg transition-colors disabled:bg-gray-600"
+                                >
+                                    Iniciar Conciliação
+                                </button>
+                            )}
+                        </>
+                    )}
+                    {isReconciliationRunning && (
+                        <div className="flex items-center justify-center gap-3 text-lg text-teal-300 p-8">
+                            <LoadingSpinnerIcon className="w-8 h-8 animate-spin" />
+                            <span>Realizando conciliação...</span>
+                        </div>
+                    )}
+                    {report.reconciliationResult && (
+                        <ReconciliationView result={report.reconciliationResult} />
+                    )}
+                </div>
+            </div>
 
             <div>
                 <h2 className="text-xl font-bold text-gray-200 mb-4 border-t border-gray-700 pt-8">Simulação Tributária (What-If ICMS)</h2>
-                <div className="bg-gray-700/30 p-4 rounded-lg space-y-4">
-                    <p className="text-xs text-gray-400 text-center">
-                        Ajuste a alíquota para simular o impacto do ICMS sobre a base de cálculo total dos produtos de{' '}
-                        <span className="font-bold text-teal-300">{baseValueForSim.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>.
-                        A alíquota de referência calculada a partir dos dados é <span className="font-bold text-blue-300">{referenceRate.toFixed(2)}%</span>.
-                    </p>
-                    <div className="flex items-center gap-3">
-                        <input
-                            id="icms-rate"
-                            type="range"
-                            min="0"
-                            max="40"
-                            step="0.1"
-                            value={simulationRate}
-                            onChange={(e) => setSimulationRate(parseFloat(e.target.value))}
-                            className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                        />
-                        <span className="font-mono text-lg text-teal-300 w-24 text-center bg-gray-900/50 py-1 rounded-md">{simulationRate.toFixed(2)}%</span>
+                {baseValueForSim > 0 ? (
+                    <div className="bg-gray-700/30 p-4 rounded-lg space-y-4">
+                        <p className="text-xs text-gray-400 text-center">
+                            Ajuste a alíquota para simular o impacto do ICMS sobre a base de cálculo total dos produtos de{' '}
+                            <span className="font-bold text-teal-300">{baseValueForSim.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>.
+                            A alíquota de referência calculada a partir dos dados é <span className="font-bold text-blue-300">{referenceRate.toFixed(2)}%</span>.
+                        </p>
+                        <div className="flex items-center gap-3">
+                            <input
+                                id="icms-rate"
+                                type="range"
+                                min="0"
+                                max="40"
+                                step="0.1"
+                                value={simulationRate}
+                                onChange={(e) => setSimulationRate(parseFloat(e.target.value))}
+                                className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                            />
+                            <span className="font-mono text-lg text-teal-300 w-24 text-center bg-gray-900/50 py-1 rounded-md">{simulationRate.toFixed(2)}%</span>
+                        </div>
+                        <div className="text-center bg-gray-900/50 p-3 rounded-lg">
+                            <p className="text-sm text-gray-400">ICMS Estimado</p>
+                            <p className="text-2xl font-bold text-teal-300 font-mono">
+                                {estimatedIcms.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                            </p>
+                        </div>
                     </div>
-                     <div className="text-center bg-gray-900/50 p-3 rounded-lg">
-                        <p className="text-sm text-gray-400">ICMS Estimado</p>
-                        <p className="text-2xl font-bold text-teal-300 font-mono">
-                            {estimatedIcms.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                ) : (
+                    <div className="bg-gray-700/30 p-4 rounded-lg text-center">
+                        <p className="text-sm text-gray-500">
+                            Simulação indisponível. Nenhum valor de produto válido foi encontrado nos documentos para servir como base de cálculo.
                         </p>
                     </div>
-                </div>
+                )}
             </div>
             
             <div>

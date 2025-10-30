@@ -24,6 +24,10 @@ const nlpExtractionSchema = {
           produto_qtd: { type: Type.NUMBER, nullable: true },
           produto_valor_unit: { type: Type.NUMBER, nullable: true },
           produto_valor_total: { type: Type.NUMBER, nullable: true },
+          produto_valor_icms: { type: Type.NUMBER, nullable: true, description: "Valor do imposto ICMS." },
+          produto_valor_pis: { type: Type.NUMBER, nullable: true, description: "Valor do imposto PIS." },
+          produto_valor_cofins: { type: Type.NUMBER, nullable: true, description: "Valor do imposto COFINS." },
+          produto_valor_iss: { type: Type.NUMBER, nullable: true, description: "Valor do imposto ISS." },
         },
         required: ['produto_nome'],
       },
@@ -52,6 +56,7 @@ export const extractDataFromText = async (text: string): Promise<Record<string, 
       - Converta todos os valores monetários para números (ex: "1.234,56" se torna 1234.56).
       - Se múltiplos itens forem encontrados, liste todos eles no array 'items'.
       - Se for um DANFE, pode haver apenas um item genérico representando a nota inteira.
+      - Garanta que qualquer aspas duplas dentro dos valores de texto (como 'produto_nome') sejam devidamente escapadas com uma barra invertida (ex: "Produto com \\"aspas\\"").
 
       Texto para análise:
       ---

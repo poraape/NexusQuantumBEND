@@ -1,5 +1,5 @@
 import { Type } from "@google/genai";
-import type { AnalysisResult, AuditReport, AccountingEntry, AuditedDocument, SpedFile } from '../types';
+import type { AnalysisResult, AuditReport, AccountingEntry, AuditedDocument, SpedFile, KeyMetric } from '../types';
 import { logger } from "../services/logger";
 import { parseSafeFloat } from "../utils/parsingUtils";
 import { generateJSON } from "../services/geminiService";
@@ -16,9 +16,11 @@ const analysisResponseSchema = {
         properties: {
           metric: { type: Type.STRING },
           value: { type: Type.STRING },
-          insight: { type: Type.STRING },
+          insight: { type: Type.STRING, nullable: true },
+          status: { type: Type.STRING, enum: ['OK', 'PARTIAL', 'UNAVAILABLE', 'ALERT'] },
+          explanation: { type: Type.STRING, nullable: true }
         },
-        required: ['metric', 'value', 'insight'],
+        required: ['metric', 'value', 'status'],
       },
     },
     actionableInsights: {
@@ -40,89 +42,51 @@ const MOCK_ALIQUOTAS = {
     IVA: 0.25, // 25% (simulado)
 };
 
+type AggregatedMetrics = Record<string, KeyMetric>;
+
+
 /**
- * [RECONSTRUÍDO] Executa a agregação contábil determinística.
- * Esta função foi completamente reescrita para agrupar itens por NFe e reconstruir os totais a partir da base,
- * corrigindo o bug crítico de valores zerados.
+ * Executa a agregação contábil determinística de forma contextual.
+ * Esta função agrupa itens por NFe, reconstrói os totais e qualifica
+ * cada métrica com um status (OK, ALERT, UNAVAILABLE) e uma explicação,
+ * garantindo que a análise reflita a qualidade real dos dados.
  * @param report O relatório de auditoria contendo todos os documentos processados.
- * @returns Um registro de métricas agregadas.
+ * @returns Um registro de métricas agregadas enriquecidas.
  */
-const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Record<string, any> => {
+const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): AggregatedMetrics => {
     const validDocs = report.documents.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
-
-    const defaultMetrics = {
-        'Número de Documentos Válidos': 0,
-        'Valor Total das NFes': formatCurrency(0),
-        'Valor Total dos Produtos': formatCurrency(0),
-        'Total de Itens Processados': 0,
-        'Valor Total de ICMS': formatCurrency(0),
-        'Valor Total de PIS': formatCurrency(0),
-        'Valor Total de COFINS': formatCurrency(0),
-        'Valor Total de ISS': formatCurrency(0),
-        'Estimativa de IVA (Simulado)': formatCurrency(0),
-    };
-
+    const metrics: AggregatedMetrics = {};
+    
     if (validDocs.length === 0) {
-        return defaultMetrics;
+        metrics['Número de Documentos Válidos'] = { metric: 'Número de Documentos Válidos', value: '0', status: 'ALERT', explanation: 'Nenhum documento com dados válidos foi encontrado para processamento.' };
+        return metrics;
     }
 
     const allItems = validDocs.flatMap(d => d.doc.data!);
     
-    // Etapa 1: Agrupar todos os itens por NFe ID e agregar seus valores.
     const nfeAggregates = new Map<string, {
-        totalProductValue: number;
-        totalICMS: number;
-        totalPIS: number;
-        totalCOFINS: number;
-        totalISS: number;
-        officialNfeTotal: number; // Armazena o total oficial, se disponível
+        totalProductValue: number; totalICMS: number; totalPIS: number; totalCOFINS: number; totalISS: number; officialNfeTotal: number;
     }>();
 
     for (const item of allItems) {
         const nfeId = item.nfe_id;
-        if (!nfeId) continue; // Pula itens sem um link claro com a NFe
-
+        if (!nfeId) continue;
         if (!nfeAggregates.has(nfeId)) {
-            nfeAggregates.set(nfeId, {
-                totalProductValue: 0,
-                totalICMS: 0,
-                totalPIS: 0,
-                totalCOFINS: 0,
-                totalISS: 0,
-                officialNfeTotal: 0,
-            });
+            nfeAggregates.set(nfeId, { totalProductValue: 0, totalICMS: 0, totalPIS: 0, totalCOFINS: 0, totalISS: 0, officialNfeTotal: 0 });
         }
-
         const currentNfe = nfeAggregates.get(nfeId)!;
         currentNfe.totalProductValue += parseSafeFloat(item.produto_valor_total);
         currentNfe.totalICMS += parseSafeFloat(item.produto_valor_icms);
         currentNfe.totalPIS += parseSafeFloat(item.produto_valor_pis);
         currentNfe.totalCOFINS += parseSafeFloat(item.produto_valor_cofins);
         currentNfe.totalISS += parseSafeFloat(item.produto_valor_iss);
-        
-        // Usa o total oficial da NFe do primeiro item que o tiver. Deve ser o mesmo para todos os itens.
-        if (currentNfe.officialNfeTotal === 0) {
-            currentNfe.officialNfeTotal = parseSafeFloat(item.valor_total_nfe);
-        }
+        if (currentNfe.officialNfeTotal === 0) currentNfe.officialNfeTotal = parseSafeFloat(item.valor_total_nfe);
     }
 
-    // Etapa 2: Calcular os totais gerais a partir dos agregados por NFe.
-    let grandTotalNfeValue = 0;
-    let grandTotalProductValue = 0;
-    let grandTotalICMS = 0;
-    let grandTotalPIS = 0;
-    let grandTotalCOFINS = 0;
-    let grandTotalISS = 0;
-
+    let grandTotalNfeValue = 0, grandTotalProductValue = 0, grandTotalICMS = 0, grandTotalPIS = 0, grandTotalCOFINS = 0, grandTotalISS = 0;
     for (const nfe of nfeAggregates.values()) {
         const reconstructedTotal = nfe.totalProductValue + nfe.totalICMS + nfe.totalPIS + nfe.totalCOFINS + nfe.totalISS;
-        // Usa o total oficial se disponível e parecer correto (próximo da soma dos itens), senão, reconstrói.
-        if (nfe.officialNfeTotal > 0 && Math.abs(nfe.officialNfeTotal - reconstructedTotal) < 0.02) { // Permite diferença de arredondamento de 2 centavos
-             grandTotalNfeValue += nfe.officialNfeTotal;
-        } else {
-             grandTotalNfeValue += reconstructedTotal;
-        }
-        
+        grandTotalNfeValue += (nfe.officialNfeTotal > 0 && Math.abs(nfe.officialNfeTotal - reconstructedTotal) < 0.02) ? nfe.officialNfeTotal : reconstructedTotal;
         grandTotalProductValue += nfe.totalProductValue;
         grandTotalICMS += nfe.totalICMS;
         grandTotalPIS += nfe.totalPIS;
@@ -130,37 +94,37 @@ const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Recor
         grandTotalISS += nfe.totalISS;
     }
 
-    const totalIVA = (grandTotalPIS + grandTotalCOFINS) * MOCK_ALIQUOTAS.IVA;
-
-    const metrics: Record<string, string | number> = {
-        'Número de Documentos Válidos': nfeAggregates.size, // Conta corretamente as NFes únicas com itens
-        'Valor Total das NFes': formatCurrency(grandTotalNfeValue),
-        'Valor Total dos Produtos': formatCurrency(grandTotalProductValue),
-        'Total de Itens Processados': allItems.length,
-        'Valor Total de ICMS': formatCurrency(grandTotalICMS),
-        'Valor Total de PIS': formatCurrency(grandTotalPIS),
-        'Valor Total de COFINS': formatCurrency(grandTotalCOFINS),
-        'Valor Total de ISS': formatCurrency(grandTotalISS),
-        'Estimativa de IVA (Simulado)': formatCurrency(totalIVA),
-    };
+    metrics['Número de Documentos Válidos'] = { metric: 'Número de Documentos Válidos', value: nfeAggregates.size.toString(), status: 'OK', explanation: `${nfeAggregates.size} documentos com ${allItems.length} itens válidos foram processados.` };
+    metrics['Total de Itens Processados'] = { metric: 'Total de Itens Processados', value: allItems.length.toString(), status: 'OK', explanation: `Soma de todos os itens de produtos/serviços encontrados nos documentos válidos.` };
+    metrics['Valor Total das NFes'] = { metric: 'Valor Total das NFes', value: formatCurrency(grandTotalNfeValue), status: grandTotalNfeValue > 0 ? 'OK' : 'ALERT', explanation: grandTotalNfeValue > 0 ? `Soma dos valores totais de ${nfeAggregates.size} NFe(s).` : 'O valor total das NFes é zero. Verifique se os valores nos documentos de origem estão corretos.' };
+    metrics['Valor Total dos Produtos'] = { metric: 'Valor Total dos Produtos', value: formatCurrency(grandTotalProductValue), status: grandTotalProductValue > 0 ? 'OK' : 'ALERT', explanation: 'Soma de todos os itens de produtos. Um valor zero pode indicar que apenas serviços foram processados ou há um problema nos dados.' };
     
-    if (grandTotalNfeValue === 0 && allItems.length > 0) {
-        metrics['Alerta de Qualidade'] = 'O valor total das NFes processadas é zero. Isso indica problemas graves nos dados de origem.';
-    }
+    const createTaxMetric = (name: string, totalValue: number, taxName: string, fieldName: string): KeyMetric => {
+        const itemsWithTax = allItems.filter(i => parseSafeFloat(i[fieldName]) !== 0).length;
+        if (itemsWithTax > 0) {
+            return { metric: name, value: formatCurrency(totalValue), status: 'OK', explanation: `Soma do ${taxName} encontrado em ${itemsWithTax} item(ns).` };
+        }
+        return { metric: name, value: formatCurrency(0), status: 'UNAVAILABLE', explanation: `Nenhum item com valor de ${taxName} foi detectado nos documentos.` };
+    };
+
+    metrics['Valor Total de ICMS'] = createTaxMetric('Valor Total de ICMS', grandTotalICMS, 'ICMS', 'produto_valor_icms');
+    metrics['Valor Total de PIS'] = createTaxMetric('Valor Total de PIS', grandTotalPIS, 'PIS', 'produto_valor_pis');
+    metrics['Valor Total de COFINS'] = createTaxMetric('Valor Total de COFINS', grandTotalCOFINS, 'COFINS', 'produto_valor_cofins');
+    metrics['Valor Total de ISS'] = createTaxMetric('Valor Total de ISS', grandTotalISS, 'ISS', 'produto_valor_iss');
+
+    const ivaBase = grandTotalPIS + grandTotalCOFINS;
+    metrics['Estimativa de IVA (Simulado)'] = { metric: 'Estimativa de IVA (Simulado)', value: formatCurrency(ivaBase * MOCK_ALIQUOTAS.IVA), status: ivaBase > 0 ? 'OK' : 'UNAVAILABLE', explanation: `Simulação de ${MOCK_ALIQUOTAS.IVA * 100}% sobre a base de PIS/COFINS de ${formatCurrency(ivaBase)}. Não representa um valor fiscal real.` };
 
     return metrics;
 }
 
-const runAIAccountingSummary = async (dataSample: string, aggregatedMetrics: Record<string, any>): Promise<AnalysisResult> => {
-  const dataQualityIssue = aggregatedMetrics['Alerta de Qualidade'];
-
+const runAIAccountingSummary = async (dataSample: string, aggregatedMetrics: AggregatedMetrics): Promise<AnalysisResult> => {
   const prompt = `
-        You are an expert financial analyst. I have performed a preliminary, deterministic analysis on a batch of fiscal documents and derived the following key aggregated metrics:
+        You are an expert financial analyst. I have performed a preliminary, deterministic analysis on a batch of fiscal documents and derived the following key aggregated metrics, each with a status indicating data quality:
         ---
-        Aggregated Metrics:
+        Aggregated Metrics (Source of truth with status and explanations):
         ${JSON.stringify(aggregatedMetrics, null, 2)}
         ---
-        ${dataQualityIssue ? `\n**ALERTA CRÍTICO DE QUALIDADE DE DADOS:** ${dataQualityIssue}\n` : ''}
         I also have a small, representative sample of the line-item data from these documents in CSV format:
         ---
         Data Sample:
@@ -169,12 +133,12 @@ const runAIAccountingSummary = async (dataSample: string, aggregatedMetrics: Rec
 
         Your task is to act as the final step in the analysis pipeline.
         1.  Create a compelling, professional 'title' for this analysis report.
-        2.  Write a concise 'summary' of the fiscal situation based on both the aggregated metrics and the data sample.
-        3.  Populate the 'keyMetrics' array. You MUST use the pre-calculated aggregated metrics as the primary source of truth. You can add 1-2 additional metrics if you can derive them reliably from the data sample (e.g., Top Product by Value).
-        4.  Generate 2-3 insightful, 'actionableInsights' for a business manager. ${dataQualityIssue ? "Você DEVE incluir um insight abordando diretamente o alerta de qualidade de dados." : ""}
-        5.  Based on everything, provide 1-2 'strategicRecommendations' for the business. These should be higher-level than the actionable insights, focusing on long-term strategy (e.g., "Consider reviewing the supply chain for product X due to price volatility," or "Evaluate the tax regime for service-based revenue.").
+        2.  Write a concise 'summary' of the fiscal situation based on both the aggregated metrics and the data sample. Address any metrics with 'ALERT' or 'UNAVAILABLE' status in your summary.
+        3.  Populate the 'keyMetrics' array. You MUST use the pre-calculated aggregated metrics. For each metric, transfer its 'metric', 'value', 'status', and 'explanation'. Then, using your analytical skill, write a concise and relevant 'insight' for each one, especially for metrics with 'ALERT' or 'UNAVAILABLE' status. The insight should be a human-friendly interpretation of the status and value.
+        4.  Generate 2-3 insightful, 'actionableInsights' for a business manager. If there are metrics with 'ALERT' status, you MUST include an insight addressing it directly.
+        5.  Based on everything, provide 1-2 'strategicRecommendations' for the business. These should be higher-level than the actionable insights, focusing on long-term strategy.
 
-        The entire response must be in Brazilian Portuguese and formatted as a single JSON object adhering to the required schema. Do not include any text outside of the JSON object.
+        The entire response must be in Brazilian Portuguese and formatted as a single JSON object adhering to the required schema. Ensure any double quotes inside JSON string values are properly escaped (e.g., "insight sobre \\"produto X\\""). Do not include any text outside of the JSON object.
     `;
   
   return generateJSON<AnalysisResult>(
@@ -354,11 +318,19 @@ export const runAccountingAnalysis = async (report: Omit<AuditReport, 'summary'>
     
     if (validDocsData.length === 0) {
         // Return a default summary if no valid data is available
+        const keyMetricsArray: KeyMetric[] = Object.values(aggregatedMetrics);
+        keyMetricsArray.push({
+            metric: 'Análise de IA',
+            value: 'Indisponível',
+            status: 'UNAVAILABLE',
+            explanation: 'A análise por IA não pôde ser executada devido à falta de dados válidos.',
+        });
+
         const defaultSummary: AnalysisResult = {
-            title: "Análise Fiscal Concluída",
-            summary: "Não foram encontrados dados válidos para gerar um resumo detalhado. Verifique os documentos com erro.",
-            keyMetrics: Object.entries(aggregatedMetrics).map(([key, value]) => ({ metric: key, value: String(value), insight: "" })),
-            actionableInsights: ["Verificar a causa dos erros nos documentos importados para permitir uma análise completa."],
+            title: "Análise Fiscal Concluída com Alertas",
+            summary: "Não foram encontrados dados válidos para gerar um resumo detalhado. Verifique os documentos com erro ou o conteúdo dos arquivos enviados.",
+            keyMetrics: keyMetricsArray,
+            actionableInsights: ["Verificar a causa dos erros nos documentos importados para permitir uma análise completa.", "Garantir que os arquivos CSV/XLSX contenham colunas com valores monetários e identificadores de nota fiscal."],
             strategicRecommendations: ["Implementar um processo de validação de arquivos na origem para garantir a qualidade dos dados para análise."]
         };
          return { ...report, summary: defaultSummary, aggregatedMetrics, accountingEntries, spedFile };

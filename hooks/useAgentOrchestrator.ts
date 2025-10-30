@@ -1,26 +1,30 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Chat } from '@google/genai';
-import type { ChatMessage, AuditReport, ClassificationResult, AgentStates } from '../types';
+import type { ChatMessage, AuditReport, ClassificationResult, AgentStates, ReconciliationResult, AuditedDocument } from '../types';
 import { logger } from '../services/logger';
-import { importFiles } from '../utils/importPipeline';
+import { importFiles, importBankFiles } from '../utils/importPipeline';
 import { runAudit } from '../agents/auditorAgent';
 import { runClassification } from '../agents/classifierAgent';
 import { runIntelligenceAnalysis } from '../agents/intelligenceAgent';
 import { runAccountingAnalysis } from '../agents/accountantAgent';
 import { runDeterministicCrossValidation } from '../utils/fiscalCompare';
 import { startChat } from '../services/chatService';
+import { runReconciliation } from '../agents/reconciliationAgent';
 
 
 const initialAgentStates: AgentStates = {
     ocr: { status: 'pending', progress: { step: 'Aguardando arquivos', current: 0, total: 0 } },
     auditor: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
     classifier: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
-    crossValidator: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
+    crossValidator: { status: 'pending', progress: { step: ``, current: 0, total: 0 } },
     intelligence: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
     accountant: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
+    reconciliation: { status: 'pending', progress: { step: '', current: 0, total: 0 } },
 };
 
-const CORRECTIONS_STORAGE_KEY = 'nexus-classification-corrections';
+const CLASSIFICATION_CORRECTIONS_KEY = 'nexus-classification-corrections';
+const COST_CENTER_CORRECTIONS_KEY = 'nexus-cost-center-corrections';
+
 
 const getDetailedErrorMessage = (error: unknown): string => {
     logger.log('ErrorHandler', 'ERROR', 'Analisando erro da aplicação.', { error });
@@ -48,15 +52,17 @@ export const useAgentOrchestrator = () => {
     const [pipelineError, setPipelineError] = useState<boolean>(false);
     const [isPipelineComplete, setIsPipelineComplete] = useState(false);
     const [classificationCorrections, setClassificationCorrections] = useState<Record<string, ClassificationResult['operationType']>>({});
+    const [costCenterCorrections, setCostCenterCorrections] = useState<Record<string, string>>({});
     
     const chatSessionRef = useRef<Chat | null>(null);
     
     useEffect(() => {
         try {
-            const storedCorrections = localStorage.getItem(CORRECTIONS_STORAGE_KEY);
-            if (storedCorrections) {
-                setClassificationCorrections(JSON.parse(storedCorrections));
-            }
+            const storedClassCorrections = localStorage.getItem(CLASSIFICATION_CORRECTIONS_KEY);
+            if (storedClassCorrections) setClassificationCorrections(JSON.parse(storedClassCorrections));
+
+            const storedCostCenterCorrections = localStorage.getItem(COST_CENTER_CORRECTIONS_KEY);
+            if (storedCostCenterCorrections) setCostCenterCorrections(JSON.parse(storedCostCenterCorrections));
         } catch (e) {
             logger.log('Orchestrator', 'ERROR', 'Falha ao carregar correções do localStorage.', { error: e });
         }
@@ -91,7 +97,7 @@ export const useAgentOrchestrator = () => {
 
             // Etapa 3: Classificação Heurística
             setAgentStates(prev => ({...prev, classifier: { status: 'running', progress: { step: `Classificando ${partialReport.documents.length} documentos...`, current: 0, total: 1 }}}));
-            partialReport = await runClassification(partialReport, classificationCorrections);
+            partialReport = await runClassification(partialReport, classificationCorrections, costCenterCorrections);
             setAgentStates(prev => ({...prev, classifier: { status: 'completed', progress: { step: `Classificação concluída`, current: 1, total: 1 }}}));
 
             // Etapa 4: Validação Cruzada Determinística
@@ -133,37 +139,88 @@ export const useAgentOrchestrator = () => {
             setIsPipelineComplete(true);
             setAgentStates(initialAgentStates); // Reset states on failure
         }
-    }, [reset, classificationCorrections]);
+    }, [reset, classificationCorrections, costCenterCorrections]);
+
+    const runReconciliationPipeline = useCallback(async (bankFiles: File[]) => {
+        if (!auditReport) {
+            setError("Execute uma análise fiscal antes de iniciar a conciliação.");
+            return;
+        }
+        logger.log('Orchestrator', 'INFO', 'Iniciando pipeline de conciliação bancária.');
+        setAgentStates(prev => ({ ...prev, reconciliation: { status: 'running', progress: { step: 'Lendo extratos...', current: 0, total: bankFiles.length }}}));
+        setError(null);
+
+        try {
+            const bankTransactions = await importBankFiles(bankFiles);
+            if (bankTransactions.length === 0) throw new Error("Nenhuma transação válida encontrada nos extratos bancários.");
+            
+            setAgentStates(prev => ({ ...prev, reconciliation: { status: 'running', progress: { step: 'Cruzando dados...', current: 1, total: 2 }}}));
+            const reconciliationResult = await runReconciliation(auditReport.documents, bankTransactions);
+
+            setAuditReport(prev => {
+                if (!prev) return null;
+                const docMap = new Map<string, AuditedDocument>(prev.documents.map(d => [d.doc.name, d]));
+                
+                reconciliationResult.matchedPairs.forEach(pair => {
+                    const doc = docMap.get(pair.doc.doc.name);
+                    if (doc) doc.reconciliationStatus = 'CONCILIADO';
+                });
+
+                return { ...prev, documents: Array.from(docMap.values()), reconciliationResult };
+            });
+
+             setAgentStates(prev => ({ ...prev, reconciliation: { status: 'completed', progress: { step: 'Conciliação finalizada', current: 2, total: 2 }}}));
+        } catch(err) {
+            const errorMessage = getDetailedErrorMessage(err);
+            setError(`Falha na conciliação: ${errorMessage}`);
+            setAgentStates(prev => ({ ...prev, reconciliation: { status: 'error', progress: { ...prev.reconciliation.progress, step: 'Erro' }}}));
+        }
+    }, [auditReport]);
 
     const handleSendMessage = useCallback(async (message: string) => {
         if (!chatSessionRef.current) {
             setError('A sessão de chat não foi inicializada.');
             return;
         }
-
+    
         const userMessage: ChatMessage = { id: Date.now().toString(), sender: 'user', text: message };
-        setMessages(prev => [...prev, userMessage]);
+        const aiMessageId = (Date.now() + 1).toString();
+        const initialAiMessage: ChatMessage = { id: aiMessageId, sender: 'ai', text: '' };
+    
+        setMessages(prev => [...prev, userMessage, initialAiMessage]);
         setIsStreaming(true);
-
+    
+        let fullResponseText = '';
         try {
-            const response = await chatSessionRef.current.sendMessage({ message });
-            const responseText = response.text;
-            
-            if (!responseText) throw new Error("A IA retornou uma resposta vazia.");
-            
-            const parsedResponse = JSON.parse(responseText);
-            
-            const aiMessage: ChatMessage = {
-                id: (Date.now() + 1).toString(),
-                sender: 'ai',
-                text: parsedResponse.text,
-                chartData: parsedResponse.chartData || undefined
-            };
-            setMessages(prev => [...prev, aiMessage]);
-
+            const stream = await chatSessionRef.current.sendMessageStream({ message });
+    
+            for await (const chunk of stream) {
+                fullResponseText += chunk.text;
+                // Update the last AI message in the state with the streaming text
+                setMessages(prev => prev.map(msg => 
+                    msg.id === aiMessageId ? { ...msg, text: fullResponseText } : msg
+                ));
+            }
+    
+            // Once streaming is complete, parse the full text for chart data
+            if (fullResponseText) {
+                 const parsedResponse = JSON.parse(fullResponseText);
+                 setMessages(prev => prev.map(msg =>
+                    msg.id === aiMessageId ? {
+                        ...msg,
+                        text: parsedResponse.text,
+                        chartData: parsedResponse.chartData || undefined
+                    } : msg
+                 ));
+            } else {
+                 throw new Error("A IA retornou uma resposta vazia.");
+            }
+    
         } catch (err) {
             const finalMessage = getDetailedErrorMessage(err);
             setError(finalMessage);
+            // Remove the placeholder AI message on error
+            setMessages(prev => prev.filter(msg => msg.id !== aiMessageId));
         } finally {
             setIsStreaming(false);
         }
@@ -184,11 +241,32 @@ export const useAgentOrchestrator = () => {
         const newCorrections = { ...classificationCorrections, [docName]: newClassification };
         setClassificationCorrections(newCorrections);
         try {
-            localStorage.setItem(CORRECTIONS_STORAGE_KEY, JSON.stringify(newCorrections));
+            localStorage.setItem(CLASSIFICATION_CORRECTIONS_KEY, JSON.stringify(newCorrections));
         } catch(e) {
-            logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção no localStorage.`, { error: e });
+            logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção de classificação no localStorage.`, { error: e });
         }
     }, [classificationCorrections]);
+    
+    const handleCostCenterChange = useCallback((docName: string, newCostCenter: string) => {
+        setAuditReport(prevReport => {
+            if (!prevReport) return null;
+            const updatedDocs = prevReport.documents.map(doc => {
+                if (doc.doc.name === docName && doc.classification) {
+                    return { ...doc, classification: { ...doc.classification, costCenter: newCostCenter } };
+                }
+                return doc;
+            });
+            return { ...prevReport, documents: updatedDocs };
+        });
+
+        const newCorrections = { ...costCenterCorrections, [docName]: newCostCenter };
+        setCostCenterCorrections(newCorrections);
+        try {
+            localStorage.setItem(COST_CENTER_CORRECTIONS_KEY, JSON.stringify(newCorrections));
+        } catch(e) {
+            logger.log('Orchestrator', 'ERROR', `Falha ao salvar correção de centro de custo no localStorage.`, { error: e });
+        }
+    }, [costCenterCorrections]);
 
     const handleStopStreaming = useCallback(() => {
         logger.log('Orchestrator', 'WARN', 'A parada de streaming não é suportada na arquitetura atual.');
@@ -209,6 +287,8 @@ export const useAgentOrchestrator = () => {
         handleStopStreaming,
         setError,
         handleClassificationChange,
+        handleCostCenterChange,
+        runReconciliationPipeline,
         reset,
     };
 };

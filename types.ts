@@ -23,10 +23,15 @@ export interface ChatMessage {
   chartData?: ChartData;
 }
 
+// FIX: Added ExportType for chat export functionality.
+export type ExportType = 'docx' | 'html' | 'pdf';
+
 export interface KeyMetric {
   metric: string;
   value: string;
-  insight: string;
+  insight?: string;
+  status: 'OK' | 'PARTIAL' | 'UNAVAILABLE' | 'ALERT';
+  explanation?: string;
 }
 
 export interface AnalysisResult {
@@ -61,7 +66,7 @@ export type ImportedDoc = {
 
 // --- New Types for Agent Orchestration ---
 // FIX: Added and exported Agent state types that were missing, causing import errors.
-export type AgentName = 'ocr' | 'auditor' | 'classifier' | 'crossValidator' | 'intelligence' | 'accountant';
+export type AgentName = 'ocr' | 'auditor' | 'classifier' | 'crossValidator' | 'intelligence' | 'accountant' | 'reconciliation';
 
 export interface AgentProgress {
   step: string;
@@ -93,7 +98,10 @@ export interface ClassificationResult {
     operationType: 'Compra' | 'Venda' | 'Devolução' | 'Serviço' | 'Transferência' | 'Outros';
     businessSector: string; // e.g., 'Indústria', 'Comércio', 'Tecnologia'
     confidence: number;
+    costCenter?: string; // e.g., 'Vendas', 'Marketing', 'TI'
 }
+
+export type ReconciliationStatus = 'CONCILIADO' | 'PENDENTE';
 
 export interface AuditedDocument {
   doc: ImportedDoc;
@@ -101,6 +109,7 @@ export interface AuditedDocument {
   score?: number; // Weighted score of inconsistencies
   inconsistencies: Inconsistency[];
   classification?: ClassificationResult;
+  reconciliationStatus?: ReconciliationStatus;
 }
 
 export interface AccountingEntry {
@@ -113,6 +122,27 @@ export interface AccountingEntry {
 export interface SpedFile {
     filename: string;
     content: string;
+}
+
+// --- Bank Reconciliation Types ---
+export interface BankTransaction {
+    id: string;
+    date: string; // YYYY-MM-DD
+    amount: number; // Negative for debits, positive for credits
+    description: string;
+    type: 'DEBIT' | 'CREDIT' | 'OTHER';
+    sourceFile: string;
+}
+
+export interface ReconciliationMatch {
+    doc: AuditedDocument;
+    transaction: BankTransaction;
+}
+
+export interface ReconciliationResult {
+    matchedPairs: ReconciliationMatch[];
+    unmatchedDocuments: AuditedDocument[];
+    unmatchedTransactions: BankTransaction[];
 }
 
 // --- New Types for AI-Driven Analysis ---
@@ -159,10 +189,11 @@ export interface DeterministicCrossValidationResult {
 export interface AuditReport {
   summary: AnalysisResult;
   documents: AuditedDocument[];
-  aggregatedMetrics?: Record<string, number | string>;
+  aggregatedMetrics?: Record<string, number | string | KeyMetric>;
   accountingEntries?: AccountingEntry[];
   spedFile?: SpedFile;
   aiDrivenInsights?: AIDrivenInsight[];
   crossValidationResults?: CrossValidationResult[];
   deterministicCrossValidation?: DeterministicCrossValidationResult[];
+  reconciliationResult?: ReconciliationResult;
 }

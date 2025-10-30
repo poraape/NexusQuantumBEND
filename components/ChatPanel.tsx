@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import type { ChatMessage, AuditReport } from '../types';
-import type { ExportType } from '../App';
+// FIX: Corrected import path for ExportType.
+import type { ChatMessage, AuditReport, ExportType } from '../types';
 import { SendIcon, LoadingSpinnerIcon, StopIcon, DownloadIcon, DocumentTextIcon, PaperClipIcon } from './icons';
 import { exportConversationToDocx, exportConversationToHtml, exportConversationToPdf } from '../utils/exportConversationUtils';
 import ChatMessageContent from './ChatMessageContent';
@@ -128,7 +128,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
   return (
     <div className="bg-gray-800 rounded-lg shadow-lg flex flex-col h-full max-h-[calc(100vh-12rem)] animate-fade-in">
       <div className="p-4 border-b border-gray-700 flex justify-between items-center">
-        <h2 className="text-xl font-bold text-gray-200">3. Chat Interativo</h2>
+        <h2 className="text-xl font-bold text-gray-200">Chat Interativo</h2>
         <div className="relative" ref={exportMenuRef}>
             <button
                 onClick={() => setShowExportMenu(!showExportMenu)}
