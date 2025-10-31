@@ -349,40 +349,61 @@ const generalFallbackConfigs: ParsingConfig[] = [
 
 const handleCSV = async (file: File): Promise<ImportedDoc> => {
     const buffer = await readFileAsBuffer(file);
+    
+    // Define a comprehensive list of configs to try, prioritizing common ones
+    const commonConfigs: ParsingConfig[] = [
+        { encoding: 'utf-8', delimiter: ',' },
+        { encoding: 'utf-8', delimiter: ';' },
+        { encoding: 'windows-1252', delimiter: ',' },
+        { encoding: 'windows-1252', delimiter: ';' },
+        { encoding: 'iso-8859-1', delimiter: ',' },
+        { encoding: 'iso-8859-1', delimiter: ';' },
+        { encoding: 'utf-8', delimiter: '\t' },
+        { encoding: 'utf-16le', delimiter: '\t' },
+        { encoding: 'utf-8', delimiter: '|' },
+    ];
+
     let configsToTry: ParsingConfig[] = [];
 
-    // Heuristic for delimiter
-    const textSample = new TextDecoder('utf-8').decode(buffer.slice(0, 2048));
-    const lines = textSample.split('\n').slice(0, 10);
-    
-    if (lines.length > 1) {
-        const delimiters = [';', ',', '\t', '|'];
-        const stats = delimiters.map(delimiter => {
-            const counts = lines.map(line => line.split(delimiter).length - 1);
-            const firstCount = counts[0];
-            if (firstCount === 0) return { delimiter, consistent: false, count: 0 };
-            const isConsistent = counts.every(count => count === firstCount);
-            return { delimiter, consistent: isConsistent, count: firstCount };
-        });
+    // Heuristic for delimiter detection based on UTF-8 sample
+    try {
+        const textSample = new TextDecoder('utf-8').decode(buffer.slice(0, 2048));
+        const lines = textSample.split('\n').slice(0, 10);
+        
+        if (lines.length > 1) {
+            const delimiters = [';', ',', '\t', '|'];
+            const stats = delimiters.map(delimiter => {
+                const counts = lines.map(line => line.split(delimiter).length - 1);
+                const firstCount = counts[0];
+                if (firstCount === 0) return { delimiter, consistent: false, count: 0 };
+                const isConsistent = counts.every(count => count === firstCount);
+                return { delimiter, consistent: isConsistent, count: firstCount };
+            });
 
-        const consistentDelimiters = stats.filter(s => s.consistent && s.count > 0);
-        if (consistentDelimiters.length > 0) {
-            const detectedDelimiter = consistentDelimiters.sort((a, b) => b.count - a.count)[0].delimiter;
-            logger.log('ImportPipeline', 'INFO', `Heurística detectou o delimitador: '${detectedDelimiter}'`);
-            
-            configsToTry.push({ encoding: 'utf-8', delimiter: detectedDelimiter });
-            configsToTry.push({ encoding: 'windows-1252', delimiter: detectedDelimiter });
+            const consistentDelimiters = stats.filter(s => s.consistent && s.count > 0);
+            if (consistentDelimiters.length > 0) {
+                const detectedDelimiter = consistentDelimiters.sort((a, b) => b.count - a.count)[0].delimiter;
+                logger.log('ImportPipeline', 'INFO', `Heurística detectou o delimitador: '${detectedDelimiter}'`);
+                
+                // Prioritize detected delimiter with common encodings
+                configsToTry.push({ encoding: 'utf-8', delimiter: detectedDelimiter });
+                configsToTry.push({ encoding: 'windows-1252', delimiter: detectedDelimiter });
+                configsToTry.push({ encoding: 'iso-8859-1', delimiter: detectedDelimiter });
+            }
         }
+    } catch (e) {
+        logger.log('ImportPipeline', 'WARN', `Falha na heurística de detecção de delimitador para ${file.name}.`, { error: e });
     }
 
-
+    // Add contextual parsing profiles
     const matchedProfile = contextualParsingProfiles.find(p => p.filePattern.test(file.name));
     if (matchedProfile) {
         logger.log('ImportPipeline', 'INFO', `Perfil de parsing contextual ('${matchedProfile.context}') encontrado para ${file.name}. Adicionando à lista de tentativas.`);
         configsToTry.push(matchedProfile.config);
     }
     
-    configsToTry.push(...generalFallbackConfigs);
+    // Add general fallback configs, ensuring no duplicates
+    configsToTry.push(...commonConfigs);
     configsToTry = [...new Map(configsToTry.map(item => [JSON.stringify(item), item])).values()];
 
     const numericFields = [
@@ -407,8 +428,56 @@ const handleCSV = async (file: File): Promise<ImportedDoc> => {
             });
             
             let data = results.data as Record<string, any>[];
+
+            // --- Structural Pre-validation ---
+            if (data.length === 0) {
+                logger.log('ImportPipeline', 'WARN', `Config ${JSON.stringify(config)} resultou em nenhum dado para ${file.name}.`);
+                continue; // Try next config
+            }
+
+            const headers = results.meta.fields || Object.keys(data[0]);
+            const initialColumnCount = headers.length;
+            let corruptedRowsCount = 0;
+            let emptyRowsCount = 0;
+
+            const cleanedData = data.filter((row, index) => {
+                // Check for completely empty rows (all values are null/undefined/empty string)
+                const isRowEmpty = Object.values(row).every(val => val === null || val === undefined || String(val).trim() === '');
+                if (isRowEmpty) {
+                    emptyRowsCount++;
+                    return false;
+                }
+
+                // Check for column count consistency
+                const rowColumnCount = Object.keys(row).length;
+                if (rowColumnCount !== initialColumnCount) {
+                    corruptedRowsCount++;
+                    logger.log('ImportPipeline', 'WARN', `Linha ${index + 2} em ${file.name} tem número inconsistente de colunas (${rowColumnCount} vs ${initialColumnCount}).`, { row });
+                    // Optionally, we could try to pad/truncate, but for now, we'll just warn and keep it.
+                }
+
+                // Check for rows with too few non-empty values (potential corruption)
+                const nonNullValues = Object.values(row).filter(val => val !== null && val !== undefined && String(val).trim() !== '').length;
+                if (nonNullValues < initialColumnCount * 0.5) { // If less than 50% of columns have values
+                    logger.log('ImportPipeline', 'WARN', `Linha ${index + 2} em ${file.name} parece corrompida (apenas ${nonNullValues}/${initialColumnCount} valores preenchidos).`, { row });
+                }
+
+                return true;
+            });
+
+            if (emptyRowsCount > 0) {
+                logger.log('ImportPipeline', 'INFO', `${emptyRowsCount} linha(s) vazia(s) removida(s) de ${file.name}.`);
+            }
+            if (corruptedRowsCount > 0) {
+                logger.log('ImportPipeline', 'WARN', `${corruptedRowsCount} linha(s) com número inconsistente de colunas detectada(s) em ${file.name}.`);
+            }
+
+            if (cleanedData.length === 0) {
+                logger.log('ImportPipeline', 'WARN', `Após pré-validação, nenhum dado válido permaneceu para ${file.name}.`);
+                continue; // Try next config
+            }
             
-            const normalizedData = normalizeHeadersToCanonical(data, file);
+            const normalizedData = normalizeHeadersToCanonical(cleanedData, file);
 
             // Apply parseSafeFloat to all numeric fields after normalization
             const processedData = normalizedData.map(row => {
