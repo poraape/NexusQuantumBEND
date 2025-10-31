@@ -28,7 +28,7 @@ export const runReconciliation = async (
         const docTotal = parseSafeFloat(doc.doc.data?.[0]?.valor_total_nfe);
         const docDate = dayjs(doc.doc.data?.[0]?.data_emissao);
 
-        if (docTotal === 0 || !docDate.isValid()) continue;
+        if (Number.isNaN(docTotal) || docTotal === 0 || !docDate.isValid()) continue;
 
         let bestMatchIndex = -1;
         

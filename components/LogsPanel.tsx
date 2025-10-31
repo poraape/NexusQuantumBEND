@@ -1,85 +1,60 @@
 import React, { useState, useEffect } from 'react';
-import { logger, type LogEntry, type LogLevel } from '../services/logger';
+import { logger, LogEntry } from '../services/logger';
+import { exportLogsToFile } from '../utils/exportLogs';
 
-interface LogsPanelProps {
-  onClose: () => void;
-}
-
-const levelStyles: Record<LogLevel, string> = {
-    INFO: 'bg-blue-500/20 text-blue-300',
-    WARN: 'bg-yellow-500/20 text-yellow-300',
-    ERROR: 'bg-red-500/20 text-red-300',
-};
-
-const LogsPanel: React.FC<LogsPanelProps> = ({ onClose }) => {
+const LogsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [logs, setLogs] = useState<LogEntry[]>([]);
-    const [filterLevel, setFilterLevel] = useState<LogLevel | 'ALL'>('ALL');
+    const [filter, setFilter] = useState('');
 
     useEffect(() => {
-        const handleNewLogs = (newLogs: LogEntry[]) => {
-            setLogs([...newLogs]);
+        const subscription = (newLogs: LogEntry[]) => {
+            setLogs(newLogs);
         };
-        logger.subscribe(handleNewLogs);
-        return () => logger.unsubscribe(handleNewLogs);
+        logger.subscribe(subscription);
+        return () => {
+            logger.unsubscribe(subscription);
+        };
     }, []);
 
-    const filteredLogs = logs.filter(log => filterLevel === 'ALL' || log.level === filterLevel);
-
-    const exportLogs = (format: 'json' | 'txt') => {
-        let content = '';
-        const filename = `nexus-logs-${new Date().toISOString()}`;
-        if (format === 'json') {
-            content = JSON.stringify(logs, null, 2);
-            const blob = new Blob([content], { type: 'application/json' });
-            saveAs(blob, `${filename}.json`);
-        } else {
-            content = logs.map(l => `${l.timestamp} [${l.level}] (${l.agent}): ${l.message} ${l.metadata ? JSON.stringify(l.metadata) : ''}`).join('\n');
-            const blob = new Blob([content], { type: 'text/plain' });
-            saveAs(blob, `${filename}.txt`);
-        }
-    };
-    
-     const saveAs = (blob: Blob, filename: string) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    };
+    const filteredLogs = logs.filter(log => 
+        filter ? log.agent.toLowerCase().includes(filter.toLowerCase()) : true
+    );
 
     return (
-        <div className="fixed inset-0 bg-gray-900/80 backdrop-blur-sm z-40 flex items-center justify-center animate-fade-in" onClick={onClose}>
-            <div className="bg-gray-800 w-full max-w-4xl h-[80vh] rounded-lg shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+            <div className="bg-gray-800 text-white rounded-lg shadow-lg w-3/4 h-3/4 flex flex-col">
                 <div className="p-4 border-b border-gray-700 flex justify-between items-center">
-                    <h2 className="text-xl font-bold">Logs de Execução</h2>
-                    <div className="flex items-center gap-4">
-                        <select
-                            value={filterLevel}
-                            onChange={(e) => setFilterLevel(e.target.value as any)}
-                            className="bg-gray-700 border border-gray-600 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    <h2 className="text-xl font-bold">Logs</h2>
+                    <div className="flex items-center">
+                        <input
+                            type="text"
+                            placeholder="Filtrar por agente (ex: ImportPipeline)..."
+                            value={filter}
+                            onChange={(e) => setFilter(e.target.value)}
+                            className="bg-gray-700 text-white rounded px-2 py-1 mr-4"
+                        />
+                        <button
+                            onClick={() => exportLogsToFile(logs)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded-lg text-sm mr-2"
                         >
-                            <option value="ALL">Todos os Níveis</option>
-                            <option value="INFO">INFO</option>
-                            <option value="WARN">WARN</option>
-                            <option value="ERROR">ERROR</option>
-                        </select>
-                         <div className="flex items-center gap-2">
-                            <button onClick={() => exportLogs('json')} className="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded-md">Exportar JSON</button>
-                            <button onClick={() => exportLogs('txt')} className="text-xs bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded-md">Exportar TXT</button>
-                        </div>
-                        <button onClick={onClose} className="text-2xl text-gray-500 hover:text-white">&times;</button>
+                            Exportar Logs
+                        </button>
+                        <button onClick={onClose} className="text-white">Fechar</button>
                     </div>
                 </div>
-                <div className="flex-grow p-4 overflow-y-auto font-mono text-xs">
-                    {filteredLogs.map((log, i) => (
-                        <div key={i} className="flex items-start gap-3 mb-2">
-                            <span className="text-gray-500">{new Date(log.timestamp).toLocaleTimeString()}</span>
-                            <span className={`px-1.5 py-0.5 rounded-md text-xs font-semibold ${levelStyles[log.level]}`}>{log.level}</span>
-                            <span className="text-purple-400">[{log.agent}]</span>
-                            <p className="text-gray-300 flex-1 whitespace-pre-wrap">{log.message}</p>
+                <div className="p-4 overflow-y-auto flex-grow">
+                    {filteredLogs.map((log, index) => (
+                        <div key={index} className="font-mono text-sm mb-2">
+                            <span className={`mr-2 ${log.level === 'ERROR' ? 'text-red-500' : log.level === 'WARN' ? 'text-yellow-500' : 'text-green-500'}`}>
+                                [{log.timestamp}] [{log.level}]
+                            </span>
+                            <span className="font-bold mr-2">({log.agent})</span>
+                            <span>{log.message}</span>
+                            {log.metadata && (
+                                <pre className="text-xs bg-gray-900 p-2 rounded mt-1 overflow-x-auto">
+                                    {JSON.stringify(log.metadata, null, 2)}
+                                </pre>
+                            )}
                         </div>
                     ))}
                 </div>

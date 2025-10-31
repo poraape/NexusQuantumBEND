@@ -37,23 +37,29 @@ const IncrementalInsights: React.FC<IncrementalInsightsProps> = ({ history }) =>
     
     const chartData: ChartData = {
         type: 'bar',
-        title: 'Evolução do Valor Total das NFes por Análise',
-        data: history.map((report, index) => ({
-            label: `Análise #${index + 1}`,
-            value: parseSafeFloat(report.aggregatedMetrics?.['Valor Total das NFes'])
-        })),
+        title: 'Evolucao do Valor Total das NFes por Analise',
+        data: history.map((report, index) => {
+            const parsedValue = parseSafeFloat(report.aggregatedMetrics?.['Valor Total das NFes']);
+            return {
+                label: `Analise #${index + 1}`,
+                value: Number.isNaN(parsedValue) ? 0 : parsedValue,
+            };
+        }),
         yAxisLabel: 'Valor Total (R$)',
     };
 
     const lastReport = history[history.length - 1].aggregatedMetrics || {};
     const prevReport = history[history.length - 2].aggregatedMetrics || {};
     
-    const metricsToCompare = ['Valor Total das NFes', 'Valor Total dos Produtos', 'Valor Total de ICMS', 'Número de Documentos Válidos'];
+    const metricsToCompare = ['Valor Total das NFes', 'Valor Total dos Produtos', 'Valor Total de ICMS', 'Numero de Documentos Validos'];
     const diffs: Record<string, { current: number, prev: number, delta: number }> = {};
 
     metricsToCompare.forEach(metric => {
-        const currentVal = parseSafeFloat(lastReport[metric]);
-        const prevVal = parseSafeFloat(prevReport[metric]);
+        const rawCurrentVal = parseSafeFloat(lastReport[metric]);
+        const rawPrevVal = parseSafeFloat(prevReport[metric]);
+        const currentVal = Number.isNaN(rawCurrentVal) ? 0 : rawCurrentVal;
+        const prevVal = Number.isNaN(rawPrevVal) ? 0 : rawPrevVal;
+
         if(currentVal > 0 || prevVal > 0) {
             diffs[metric] = {
                 current: currentVal,

@@ -9,6 +9,7 @@ import PipelineErrorDisplay from './components/PipelineErrorDisplay';
 import { useAgentOrchestrator } from './hooks/useAgentOrchestrator';
 import { logger } from './services/logger';
 import LogsPanel from './components/LogsPanel';
+import SplitViewLayout from './components/SplitViewLayout';
 
 const App: React.FC = () => {
   const [showLogs, setShowLogs] = useState(false);
@@ -33,17 +34,16 @@ const App: React.FC = () => {
   } = useAgentOrchestrator();
 
   const handleStartAnalysis = useCallback(async (files: File[]) => {
-    logger.clear();
-    logger.log('App', 'INFO', `Iniciando nova análise com ${files.length} arquivo(s).`);
     await runPipeline(files);
   }, [runPipeline]);
 
   const resetApp = useCallback(() => {
     resetOrchestrator();
+    logger.clear();
     logger.log('App', 'INFO', 'Aplicativo resetado para uma nova análise.');
   }, [resetOrchestrator]);
 
-  const onAddFilesForChat = useCallback((files: File[]) => {
+  const onAddFilesForChat = useCallback((newFiles: File[]) => {
       if (isPipelineRunning) {
           const warning = 'Aguarde a conclusão da análise atual antes de adicionar novos arquivos.';
           logger.log('App', 'WARN', warning);
@@ -51,24 +51,26 @@ const App: React.FC = () => {
           return;
       }
 
-      if (!files.length) {
+      if (!newFiles.length) {
           return;
       }
 
-      logger.log('App', 'INFO', `Arquivos adicionais recebidos via chat: ${files.map(f => f.name).join(', ')}`);
+      logger.log('App', 'INFO', `Arquivos adicionais recebidos via chat: ${newFiles.map(f => f.name).join(', ')}`);
       setError('Iniciando nova análise com os arquivos adicionados...');
-      handleStartAnalysis(files);
-  }, [handleStartAnalysis, isPipelineRunning, setError]);
+      runPipeline(newFiles);
+  }, [runPipeline, isPipelineRunning, setError]);
   
   return (
-    <div className="bg-gray-900 text-gray-200 min-h-screen font-sans">
+    <div className="bg-gray-900 text-gray-200 min-h-screen font-sans flex flex-col">
       <Header 
         onShowLogs={() => setShowLogs(true)} 
         onReset={resetApp} 
         isAnalysisComplete={isPipelineComplete && !isPipelineRunning}
+        auditReport={auditReport}
+        messages={messages}
       />
       
-      <main className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-8">
+      <main className="flex-grow p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto w-full">
         {!isPipelineComplete && !pipelineError && (
           <div className="max-w-4xl mx-auto">
             {isPipelineRunning ? (
@@ -84,15 +86,20 @@ const App: React.FC = () => {
         )}
 
         {isPipelineComplete && auditReport && (
-          <div className="space-y-8">
-            <ReportViewer
-                report={auditReport}
-                onClassificationChange={handleClassificationChange}
-                onCostCenterChange={handleCostCenterChange}
-                onStartReconciliation={runReconciliationPipeline}
-                isReconciliationRunning={agentStates.reconciliation.status === 'running'}
-            />
-            <div className="pt-8 border-t border-gray-700/50">
+          <SplitViewLayout
+            executiveAnalysis={
+              <div className="space-y-8">
+                <ReportViewer
+                    report={auditReport}
+                    onClassificationChange={handleClassificationChange}
+                    onCostCenterChange={handleCostCenterChange}
+                    onStartReconciliation={runReconciliationPipeline}
+                    isReconciliationRunning={agentStates.reconciliation.status === 'running'}
+                />
+              </div>
+            }
+            chatPanel={
+              <div className="pt-8 border-t border-gray-700/50">
                 <h2 className="text-2xl font-bold text-gray-200 mb-4 text-center">Explore os Dados</h2>
                 <ChatPanel
                     messages={messages}
@@ -104,8 +111,9 @@ const App: React.FC = () => {
                     onAddFiles={onAddFilesForChat}
                     isPipelineRunning={isPipelineRunning}
                 />
-            </div>
-          </div>
+              </div>
+            }
+          />
         )}
       </main>
 

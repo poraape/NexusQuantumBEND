@@ -56,14 +56,23 @@ type AggregatedMetrics = Record<string, KeyMetric>;
 const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): AggregatedMetrics => {
     const validDocs = report.documents.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
     const metrics: AggregatedMetrics = {};
-    
+
     if (validDocs.length === 0) {
-        metrics['Número de Documentos Válidos'] = { metric: 'Número de Documentos Válidos', value: '0', status: 'ALERT', explanation: 'Nenhum documento com dados válidos foi encontrado para processamento.' };
+        metrics['Numero de Documentos Validos'] = { metric: 'Numero de Documentos Validos', value: '0', status: 'ALERT', explanation: 'Nenhum documento com dados válidos foi encontrado para processamento.' };
         return metrics;
     }
 
     const allItems = validDocs.flatMap(d => d.doc.data!);
+
+    const canonicalFields = [
+        'produto_valor_total', 'produto_valor_icms', 'produto_valor_pis', 'produto_valor_cofins', 'produto_valor_iss', 'valor_total_nfe'
+    ];
+    const headersEncontrados = canonicalFields.filter(field => allItems.some(item => item.hasOwnProperty(field)));
     
+    let nValidos = 0;
+    const amostraValores: Record<string, number[]> = {};
+    headersEncontrados.forEach(field => amostraValores[field] = []);
+
     const nfeAggregates = new Map<string, {
         totalProductValue: number; totalICMS: number; totalPIS: number; totalCOFINS: number; totalISS: number; officialNfeTotal: number;
     }>();
@@ -75,13 +84,54 @@ const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Aggre
             nfeAggregates.set(nfeId, { totalProductValue: 0, totalICMS: 0, totalPIS: 0, totalCOFINS: 0, totalISS: 0, officialNfeTotal: 0 });
         }
         const currentNfe = nfeAggregates.get(nfeId)!;
-        currentNfe.totalProductValue += parseSafeFloat(item.produto_valor_total);
-        currentNfe.totalICMS += parseSafeFloat(item.produto_valor_icms);
-        currentNfe.totalPIS += parseSafeFloat(item.produto_valor_pis);
-        currentNfe.totalCOFINS += parseSafeFloat(item.produto_valor_cofins);
-        currentNfe.totalISS += parseSafeFloat(item.produto_valor_iss);
-        if (currentNfe.officialNfeTotal === 0) currentNfe.officialNfeTotal = parseSafeFloat(item.valor_total_nfe);
+
+        const processField = (fieldName: string, target: keyof typeof currentNfe) => {
+            const value = parseSafeFloat(item[fieldName]);
+            if (!Number.isNaN(value)) {
+                (currentNfe as any)[target] += value;
+                // nValidos++; // Removed from here
+                if (amostraValores[fieldName] && amostraValores[fieldName].length < 5) {
+                    amostraValores[fieldName].push(value);
+                }
+            }
+        };
+
+        processField('produto_valor_total', 'totalProductValue');
+        processField('produto_valor_icms', 'totalICMS');
+        processField('produto_valor_pis', 'totalPIS');
+        processField('produto_valor_cofins', 'totalCOFINS');
+        processField('produto_valor_iss', 'totalISS');
+
+        if (currentNfe.officialNfeTotal === 0) {
+            const nfeTotal = parseSafeFloat(item.valor_total_nfe);
+            if (!Number.isNaN(nfeTotal)) {
+                currentNfe.officialNfeTotal = nfeTotal;
+                if (amostraValores.valor_total_nfe && amostraValores.valor_total_nfe.length < 5) {
+                    amostraValores.valor_total_nfe.push(nfeTotal);
+                }
+            }
+        }
     }
+
+    // Recalculate nValidos based on aggregated Nfe data
+    nValidos = 0;
+    for (const nfe of nfeAggregates.values()) {
+        if (nfe.officialNfeTotal > 0 || nfe.totalProductValue > 0 || nfe.totalICMS > 0 || nfe.totalPIS > 0 || nfe.totalCOFINS > 0 || nfe.totalISS > 0) {
+            nValidos++;
+        }
+    }
+
+    const K = Math.max(3, Math.floor(allItems.length * 0.01));
+    const hasEnoughData = nValidos >= K;
+
+    logger.log('DeterministicAccounting', 'INFO', 'Estatísticas de validação de dados.', {
+        headersEncontrados,
+        nLinhas: allItems.length,
+        nValidos,
+        amostraValores,
+        K,
+        hasEnoughData
+    });
 
     let grandTotalNfeValue = 0, grandTotalProductValue = 0, grandTotalICMS = 0, grandTotalPIS = 0, grandTotalCOFINS = 0, grandTotalISS = 0;
     for (const nfe of nfeAggregates.values()) {
@@ -94,13 +144,16 @@ const runDeterministicAccounting = (report: Omit<AuditReport, 'summary'>): Aggre
         grandTotalISS += nfe.totalISS;
     }
 
-    metrics['Número de Documentos Válidos'] = { metric: 'Número de Documentos Válidos', value: nfeAggregates.size.toString(), status: 'OK', explanation: `${nfeAggregates.size} documentos com ${allItems.length} itens válidos foram processados.` };
+    metrics['Numero de Documentos Validos'] = { metric: 'Numero de Documentos Validos', value: nfeAggregates.size.toString(), status: 'OK', explanation: `${nfeAggregates.size} documentos com ${allItems.length} itens válidos foram processados.` };
     metrics['Total de Itens Processados'] = { metric: 'Total de Itens Processados', value: allItems.length.toString(), status: 'OK', explanation: `Soma de todos os itens de produtos/serviços encontrados nos documentos válidos.` };
-    metrics['Valor Total das NFes'] = { metric: 'Valor Total das NFes', value: formatCurrency(grandTotalNfeValue), status: grandTotalNfeValue > 0 ? 'OK' : 'ALERT', explanation: grandTotalNfeValue > 0 ? `Soma dos valores totais de ${nfeAggregates.size} NFe(s).` : 'O valor total das NFes é zero. Verifique se os valores nos documentos de origem estão corretos.' };
-    metrics['Valor Total dos Produtos'] = { metric: 'Valor Total dos Produtos', value: formatCurrency(grandTotalProductValue), status: grandTotalProductValue > 0 ? 'OK' : 'ALERT', explanation: 'Soma de todos os itens de produtos. Um valor zero pode indicar que apenas serviços foram processados ou há um problema nos dados.' };
+    metrics['Valor Total das NFes'] = { metric: 'Valor Total das NFes', value: formatCurrency(grandTotalNfeValue), status: hasEnoughData ? 'OK' : 'ALERT', explanation: hasEnoughData ? `Soma dos valores totais de ${nfeAggregates.size} NFe(s).` : 'O valor total das NFes é zero ou baixo. Verifique se os valores nos documentos de origem estão corretos.' };
+    metrics['Valor Total dos Produtos'] = { metric: 'Valor Total dos Produtos', value: formatCurrency(grandTotalProductValue), status: hasEnoughData ? 'OK' : 'ALERT', explanation: 'Soma de todos os itens de produtos. Um valor zero pode indicar que apenas serviços foram processados ou há um problema nos dados.' };
     
     const createTaxMetric = (name: string, totalValue: number, taxName: string, fieldName: string): KeyMetric => {
-        const itemsWithTax = allItems.filter(i => parseSafeFloat(i[fieldName]) !== 0).length;
+        const itemsWithTax = allItems.filter(i => {
+            const value = parseSafeFloat(i[fieldName]);
+            return !Number.isNaN(value) && value !== 0;
+        }).length;
         if (itemsWithTax > 0) {
             return { metric: name, value: formatCurrency(totalValue), status: 'OK', explanation: `Soma do ${taxName} encontrado em ${itemsWithTax} item(ns).` };
         }
@@ -138,7 +191,7 @@ const runAIAccountingSummary = async (dataSample: string, aggregatedMetrics: Agg
         4.  Generate 2-3 insightful, 'actionableInsights' for a business manager. If there are metrics with 'ALERT' status, you MUST include an insight addressing it directly.
         5.  Based on everything, provide 1-2 'strategicRecommendations' for the business. These should be higher-level than the actionable insights, focusing on long-term strategy.
 
-        The entire response must be in Brazilian Portuguese and formatted as a single JSON object adhering to the required schema. Ensure any double quotes inside JSON string values are properly escaped (e.g., "insight sobre \\"produto X\\""). Do not include any text outside of the JSON object.
+        The entire response must be in Brazilian Portuguese and formatted as a single JSON object adhering to the required schema. Ensure any double quotes inside JSON string values are properly escaped (e.g., "insight sobre \"produto X\""). Do not include any text outside of the JSON object.
     `;
   
   return generateJSON<AnalysisResult>(
@@ -154,9 +207,16 @@ const generateAccountingEntries = (documents: AuditedDocument[]): AccountingEntr
     for (const doc of documents) {
         if (doc.status === 'ERRO' || !doc.classification || !doc.doc.data || doc.doc.data.length === 0) continue;
         
-        const totalNfe = parseSafeFloat(doc.doc.data[0]?.valor_total_nfe);
-        const totalProducts = doc.doc.data.reduce((sum, item) => sum + parseSafeFloat(item.produto_valor_total), 0);
-        const totalIcms = doc.doc.data.reduce((sum, item) => sum + parseSafeFloat(item.produto_valor_icms), 0);
+        const totalNfeValue = parseSafeFloat(doc.doc.data[0]?.valor_total_nfe);
+        const totalNfe = Number.isNaN(totalNfeValue) ? 0 : totalNfeValue;
+        const totalProducts = doc.doc.data.reduce((sum, item) => {
+            const value = parseSafeFloat(item.produto_valor_total);
+            return Number.isNaN(value) ? sum : sum + value;
+        }, 0);
+        const totalIcms = doc.doc.data.reduce((sum, item) => {
+            const value = parseSafeFloat(item.produto_valor_icms);
+            return Number.isNaN(value) ? sum : sum + value;
+        }, 0);
         
         if (totalNfe === 0 && totalProducts === 0) continue; // Skip docs with no values
 
@@ -220,8 +280,7 @@ const generateAccountingEntries = (documents: AuditedDocument[]): AccountingEntr
 const generateSpedEfd = (report: Pick<AuditReport, 'documents'>): SpedFile => {
     const lines: string[] = [];
     const today = new Date();
-    const dataIni = new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('pt-BR').replace(/\//g, '');
-    const dataFim = new Date(today.getFullYear(), today.getMonth() + 1, 0).toLocaleDateString('pt-BR').replace(/\//g, '');
+          const dataIni = new Date(today.getFullYear(), today.getMonth(), 1).toLocaleDateString('pt-BR').replace(/\//g, '');    const dataFim = new Date(today.getFullYear(), today.getMonth() + 1, 0).toLocaleDateString('pt-BR').replace(/\//g, '');
 
     const recordCounts: Record<string, number> = {};
     const countRecord = (type: string) => { recordCounts[type] = (recordCounts[type] || 0) + 1; };
@@ -239,7 +298,10 @@ const generateSpedEfd = (report: Pick<AuditReport, 'documents'>): SpedFile => {
     
     for(const doc of validDocs) {
         const firstItem = doc.doc.data![0];
-        lines.push(`|C100|${doc.classification?.operationType === 'Compra' ? '0' : '1'}|0||55|||${parseSafeFloat(firstItem.valor_total_nfe).toFixed(2).replace('.',',')}||||||||`);
+        const totalNfeForSped = parseSafeFloat(firstItem.valor_total_nfe);
+        const formattedNfeTotal = Number.isNaN(totalNfeForSped) ? '0,00' : totalNfeForSped.toFixed(2).replace('.',',');
+
+        lines.push(`|C100|${doc.classification?.operationType === 'Compra' ? '0' : '1'}|0||55|||${formattedNfeTotal}||||||||`);
         countRecord('C100');
 
         const c190Aggregator: Record<string, { vBC: number, vIcms: number, vOper: number }> = {};
@@ -253,9 +315,20 @@ const generateSpedEfd = (report: Pick<AuditReport, 'documents'>): SpedFile => {
             if (!c190Aggregator[key]) {
                 c190Aggregator[key] = { vBC: 0, vIcms: 0, vOper: 0 };
             }
-            c190Aggregator[key].vBC += parseSafeFloat(item.produto_base_calculo_icms);
-            c190Aggregator[key].vIcms += parseSafeFloat(item.produto_valor_icms);
-            c190Aggregator[key].vOper += parseSafeFloat(item.produto_valor_total);
+            const baseCalc = parseSafeFloat(item.produto_base_calculo_icms);
+            if (!Number.isNaN(baseCalc)) {
+                c190Aggregator[key].vBC += baseCalc;
+            }
+
+            const icmsValue = parseSafeFloat(item.produto_valor_icms);
+            if (!Number.isNaN(icmsValue)) {
+                c190Aggregator[key].vIcms += icmsValue;
+            }
+
+            const totalOper = parseSafeFloat(item.produto_valor_total);
+            if (!Number.isNaN(totalOper)) {
+                c190Aggregator[key].vOper += totalOper;
+            }
         });
 
         Object.entries(c190Aggregator).forEach(([key, values]) => {
@@ -265,7 +338,12 @@ const generateSpedEfd = (report: Pick<AuditReport, 'documents'>): SpedFile => {
         });
         
         doc.doc.data?.forEach((item, index) => {
-            lines.push(`|C170|${index+1}|${item.produto_nome || ''}|${parseSafeFloat(item.produto_qtd).toFixed(2).replace('.',',')}|UN|${parseSafeFloat(item.produto_valor_total).toFixed(2).replace('.',',')}||${item.produto_cfop}|${item.produto_cst_icms}||||`);
+            const quantity = parseSafeFloat(item.produto_qtd);
+            const productTotal = parseSafeFloat(item.produto_valor_total);
+            const formattedQty = Number.isNaN(quantity) ? '0,00' : quantity.toFixed(2).replace('.',',');
+            const formattedProductTotal = Number.isNaN(productTotal) ? '0,00' : productTotal.toFixed(2).replace('.',',');
+
+            lines.push(`|C170|${index+1}|${item.produto_nome || ''}|${formattedQty}|UN|${formattedProductTotal}||${item.produto_cfop}|${item.produto_cst_icms}||||`);
             countRecord('C170');
         });
     }

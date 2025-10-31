@@ -1,8 +1,8 @@
-# Nexus QuantumI2A2: Análise Fiscal com IA (Frontend-Only)
+# Nexus QuantumI2A2: Análise Fiscal com IA (Aplicação Híbrida)
 
-**Nexus QuantumI2A2** é uma Single Page Application (SPA) de análise fiscal interativa que processa dados de Notas Fiscais Eletrônicas (NFe) e gera insights acionáveis através de um sistema de IA que simula múltiplos agentes especializados, **executando integralmente no navegador do cliente**.
+**Nexus QuantumI2A2** é uma aplicação híbrida (Frontend e Backend) de análise fiscal interativa que processa dados de Notas Fiscais Eletrônicas (NFe) e gera insights acionáveis através de um sistema de IA que simula múltiplos agentes especializados. A aplicação combina uma interface de usuário rica no navegador com um robusto backend para processamento de dados e orquestração de tarefas complexas.
 
-Esta aplicação demonstra uma arquitetura moderna frontend-only, onde o processamento de dados e as chamadas para a IA são gerenciados diretamente pelo cliente, garantindo privacidade, menor latência e uma infraestrutura simplificada.
+Esta aplicação demonstra uma arquitetura moderna que aproveita o poder do processamento no cliente para interatividade e um backend dedicado para escalabilidade, segurança e execução de tarefas intensivas.
 
 ---
 
@@ -22,15 +22,24 @@ Esta aplicação demonstra uma arquitetura moderna frontend-only, onde o process
 
 ---
 
-## 🏗️ Arquitetura: Frontend-Only com Agentes Assíncronos
+## 🏗️ Arquitetura: Híbrida (Frontend e Backend)
 
-A aplicação opera de forma autônoma no navegador, orquestrando tarefas complexas sem a necessidade de um backend dedicado.
+A aplicação opera com uma arquitetura híbrida, combinando um frontend interativo no navegador com um backend robusto para processamento de dados e orquestração de tarefas. Isso permite aproveitar o melhor de ambos os mundos: a responsividade e a experiência do usuário do processamento no cliente, e a escalabilidade e a capacidade de processamento intensivo do lado do servidor.
 
-*   **Orquestração de Agentes (React Hooks):** O hook `useAgentOrchestrator` atua como o cérebro da aplicação, executando o pipeline de análise de forma sequencial e assíncrona. Isso garante que a interface do usuário permaneça responsiva mesmo durante o processamento de arquivos pesados.
+*   **Backend (Python com FastAPI e Celery):** O backend é construído com Python, utilizando o framework FastAPI para expor APIs RESTful. Ele é responsável por:
+    *   Processamento de dados complexos e de grande volume.
+    *   Integração com modelos de IA que requerem mais recursos computacionais ou acesso a dados sensíveis.
+    *   Gerenciamento de tarefas assíncronas e de longa duração através do Celery, garantindo que o frontend permaneça responsivo.
+    *   Persistência de dados e interação com bancos de dados (se aplicável).
+    *   Autenticação e autorização de usuários.
+
+*   **Orquestração de Agentes (React Hooks):**** O hook `useAgentOrchestrator` atua como o cérebro da aplicação, executando o pipeline de análise de forma sequencial e assíncrona. Isso garante que a interface do usuário permaneça responsiva mesmo durante o processamento de arquivos pesados.
 *   **Processamento de Dados no Cliente:** Bibliotecas de alta performance são utilizadas para manipular arquivos diretamente no navegador:
     *   **Parsing:** `pdfjs-dist`, `xlsx`, `fast-xml-parser` e `jszip` para ler e extrair dados de diversos formatos.
     *   **OCR:** `tesseract.js` para extrair texto de PDFs baseados em imagem e outros formatos de imagem.
-*   **Inteligência Artificial Direta:** As interações com a IA são feitas através do SDK oficial `@google/genai`, que se comunica diretamente dos clientes para a API do Google Gemini. A chave de API é gerenciada de forma segura como uma variável de ambiente.
+*   **Inteligência Artificial:** As interações com a IA podem ser realizadas de duas formas:
+    *   **Diretamente do Cliente:** Para interações mais leves e em tempo real, o frontend pode se comunicar diretamente com a API do Google Gemini usando o SDK `@google/genai`.
+    *   **Via Backend:** Para tarefas de IA mais complexas, que exigem maior poder computacional, acesso a dados sensíveis ou orquestração com outros serviços, as requisições são encaminhadas ao backend, que as processa e gerencia a comunicação com os modelos de IA.
 *   **Gerenciamento de Estado:** O estado da aplicação, incluindo o progresso da análise, relatórios e conversas, é gerenciado inteiramente pelo React, garantindo uma renderização eficiente e reativa.
 
 ---
@@ -52,14 +61,43 @@ A aplicação opera de forma autônoma no navegador, orquestrando tarefas comple
     # Opcional: personalize o host dos dados de idioma do Tesseract
     # VITE_TESSERACT_LANG_PATH=https://tessdata.projectnaptha.com/4.0.0
     ```
-3.  **Inicie um Servidor de Desenvolvimento:**
-   ```bash
-   # Instale as dependências
-   npm install
-   # Inicie o servidor
-   npm run dev
-   ```
-4.  Acesse a URL fornecida (geralmente `http://localhost:5173`).
+3.  **Backend (Python/FastAPI/Celery):**
+    *   Navegue até o diretório `backend`:
+        ```bash
+        cd backend
+        ```
+    *   Crie e ative um ambiente virtual (recomendado):
+        ```bash
+        python -m venv venv
+        .\venv\Scripts\activate  # No Windows
+        # source venv/bin/activate  # No Linux/macOS
+        ```
+    *   Instale as dependências:
+        ```bash
+        pip install -r requirements.txt
+        ```
+    *   Inicie o servidor FastAPI:
+        ```bash
+        uvicorn main:app --reload
+        ```
+    *   Em um terminal separado, inicie o Celery worker (se houver tarefas assíncronas):
+        ```bash
+        celery -A tasks worker --loglevel=info
+        ```
+4.  **Frontend (React/Vite):**
+    *   Retorne ao diretório raiz do projeto:
+        ```bash
+        cd ..
+        ```
+    *   Instale as dependências:
+        ```bash
+        npm install
+        ```
+    *   Inicie o servidor de desenvolvimento:
+        ```bash
+        npm run dev
+        ```
+5.  Acesse a URL fornecida (geralmente `http://localhost:5173` para o frontend e `http://localhost:8000` para o backend).
 
 ---
 
@@ -67,14 +105,30 @@ A aplicação opera de forma autônoma no navegador, orquestrando tarefas comple
 
 ```
 /
-├── src/
-│   ├── agents/            # Lógica de negócios de cada agente IA
-│   ├── components/        # Componentes React reutilizáveis
-│   ├── hooks/             # Hooks React customizados (ex: useAgentOrchestrator)
-│   ├── services/          # Serviços (chamadas à API Gemini, logger)
-│   ├── utils/             # Funções utilitárias (parsers, exportação, regras)
-│   ├── App.tsx            # Componente principal da aplicação
-│   └── types.ts           # Definições de tipos TypeScript
-├── index.html             # Arquivo HTML principal
-└── README.md              # Este arquivo
+├── .env                   # Variáveis de ambiente (local)
+├── .env.example           # Exemplo de variáveis de ambiente
+├── .gitignore             # Arquivos e diretórios ignorados pelo Git
+├── App.tsx                # Componente principal da aplicação React
+├── docker-compose.yml     # Configuração para Docker Compose
+├── index.html             # Arquivo HTML principal do frontend
+├── index.tsx              # Ponto de entrada do frontend React
+├── package.json           # Dependências e scripts do frontend
+├── postcss.config.cjs     # Configuração do PostCSS
+├── README.md              # Este arquivo
+├── tailwind.config.js     # Configuração do Tailwind CSS
+├── tsconfig.json          # Configuração do TypeScript
+├── vite.config.ts         # Configuração do Vite
+├── agents/                # Lógica de negócios de cada agente IA (frontend)
+├── backend/               # Código do backend Python
+│   ├── app/               # Aplicação FastAPI
+│   ├── celery_config.py   # Configuração do Celery
+│   ├── Dockerfile         # Dockerfile para o backend
+│   ├── main.py            # Ponto de entrada do FastAPI
+│   ├── models.py          # Definições de modelos de dados
+│   ├── requirements.txt   # Dependências do Python
+│   └── tasks.py           # Tarefas do Celery
+├── components/            # Componentes React reutilizáveis
+├── hooks/                 # Hooks React customizados
+├── services/              # Serviços de comunicação (frontend)
+└── utils/                 # Funções utilitárias (frontend)
 ```

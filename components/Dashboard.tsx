@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import type { AuditReport, ChartData } from '../types';
 import Chart from './Chart';
 import CrossValidationPanel from './CrossValidationPanel';
@@ -8,6 +8,7 @@ import AnalysisDisplay from './AnalysisDisplay';
 import dayjs from 'dayjs';
 import { UploadIcon, LoadingSpinnerIcon } from './icons';
 import ReconciliationView from './ReconciliationView';
+import IcmsSimulationSettings from './IcmsSimulationSettings';
 
 interface DashboardProps {
     report: AuditReport;
@@ -64,9 +65,6 @@ interface MemoizedChartData {
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconciliation, isReconciliationRunning }) => {
-    const [simulationRate, setSimulationRate] = useState<number>(18.0);
-    const [baseValueForSim, setBaseValueForSim] = useState<number>(0);
-    const [referenceRate, setReferenceRate] = useState<number>(18.0);
     const [bankFiles, setBankFiles] = useState<File[]>([]);
 
     const filteredDocuments = useMemo(() => {
@@ -90,35 +88,6 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconc
         });
     }, [report.documents, dateFilter]);
 
-    useEffect(() => {
-        const validDocs = filteredDocuments.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
-        const allItems = validDocs.flatMap(d => d.doc.data!);
-        
-        let totalProductValue = 0;
-        let weightedIcmsSum = 0;
-
-        for (const item of allItems) {
-            const value = parseSafeFloat(item.produto_valor_total);
-            totalProductValue += value;
-
-            const originUf = item.emitente_uf || 'SP';
-            const destUf = item.destinatario_uf || 'SP';
-            const rate = getIcmsRate(originUf, destUf);
-            weightedIcmsSum += value * (rate / 100);
-        }
-
-        const avgRate = totalProductValue > 0 ? (weightedIcmsSum / totalProductValue) * 100 : 18.0;
-
-        setBaseValueForSim(totalProductValue);
-        setReferenceRate(avgRate);
-        if (simulationRate === 18.0 || totalProductValue === 0) {
-            setSimulationRate(avgRate); // Initialize or reset slider with the reference rate
-        }
-
-    }, [filteredDocuments, simulationRate]);
-
-    const estimatedIcms = baseValueForSim * (simulationRate / 100);
-
     const chartData = useMemo((): MemoizedChartData => {
         const validDocs = filteredDocuments.filter(d => d.status !== 'ERRO' && d.doc.data && d.doc.data.length > 0);
         const allItems = validDocs.flatMap(d => d.doc.data!);
@@ -128,7 +97,10 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconc
 
         for (const item of allItems) {
             const value = parseSafeFloat(item.produto_valor_total);
-            
+            if (Number.isNaN(value)) {
+                continue;
+            }
+
             const cfop = item.produto_cfop?.toString() || 'N/A';
             cfopData[cfop] = (cfopData[cfop] || 0) + value;
 
@@ -236,45 +208,12 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconc
                     )}
                 </div>
             </div>
-
+            
             <div>
                 <h2 className="text-xl font-bold text-gray-200 mb-4 border-t border-gray-700 pt-8">Simulação Tributária (What-If ICMS)</h2>
-                {baseValueForSim > 0 ? (
-                    <div className="bg-gray-700/30 p-4 rounded-lg space-y-4">
-                        <p className="text-xs text-gray-400 text-center">
-                            Ajuste a alíquota para simular o impacto do ICMS sobre a base de cálculo total dos produtos de{' '}
-                            <span className="font-bold text-teal-300">{baseValueForSim.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>.
-                            A alíquota de referência calculada a partir dos dados é <span className="font-bold text-blue-300">{referenceRate.toFixed(2)}%</span>.
-                        </p>
-                        <div className="flex items-center gap-3">
-                            <input
-                                id="icms-rate"
-                                type="range"
-                                min="0"
-                                max="40"
-                                step="0.1"
-                                value={simulationRate}
-                                onChange={(e) => setSimulationRate(parseFloat(e.target.value))}
-                                className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                            />
-                            <span className="font-mono text-lg text-teal-300 w-24 text-center bg-gray-900/50 py-1 rounded-md">{simulationRate.toFixed(2)}%</span>
-                        </div>
-                        <div className="text-center bg-gray-900/50 p-3 rounded-lg">
-                            <p className="text-sm text-gray-400">ICMS Estimado</p>
-                            <p className="text-2xl font-bold text-teal-300 font-mono">
-                                {estimatedIcms.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-                            </p>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="bg-gray-700/30 p-4 rounded-lg text-center">
-                        <p className="text-sm text-gray-500">
-                            Simulação indisponível. Nenhum valor de produto válido foi encontrado nos documentos para servir como base de cálculo.
-                        </p>
-                    </div>
-                )}
+                <IcmsSimulationSettings filteredDocuments={filteredDocuments} />
             </div>
-            
+
             <div>
                 <h2 className="text-xl font-bold text-gray-200 mb-4 border-t border-gray-700 pt-8">Busca Inteligente com IA</h2>
                  <SmartSearch report={report} />
@@ -298,5 +237,3 @@ const Dashboard: React.FC<DashboardProps> = ({ report, dateFilter, onStartReconc
         </div>
     );
 };
-
-export default Dashboard;
