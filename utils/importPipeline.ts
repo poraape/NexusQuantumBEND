@@ -87,6 +87,10 @@ const normalizeNFeData = (nfeData: any, fallbackId: string): Record<string, any>
     const total = infNFe.total || {};
     const icmsTot = total.ICMSTot || {};
     const issqnTot = total.ISSQNtot || {};
+
+    if (parseSafeFloat(getXmlValue(issqnTot.vServ)) > 0 && !getXmlValue(issqnTot.vISSQN)) {
+        logger.log('ImportPipeline', 'WARN', `vISSQN ausente na NFe ${nfeId}, mas vServ (${getXmlValue(issqnTot.vServ)}) > 0. Possível falha na extração de ISSQN.`);
+    }
     
     const nfeId = getXmlValue(infNFe['@_Id']) || fallbackId;
     if (!infNFe['@_Id']) {
@@ -109,7 +113,7 @@ const normalizeNFeData = (nfeData: any, fallbackId: string): Record<string, any>
         const icmsBlock = getInnerTaxBlock(imposto.ICMS);
         const pisBlock = getInnerTaxBlock(imposto.PIS);
         const cofinsBlock = getInnerTaxBlock(imposto.COFINS);
-        const issqnBlock = imposto.ISSQN || {};
+        const issqnBlock = getInnerTaxBlock(imposto.ISSQN);
         const enderEmit = emit.enderEmit || {};
         const enderDest = dest.enderDest || {};
 
@@ -137,7 +141,7 @@ const normalizeNFeData = (nfeData: any, fallbackId: string): Record<string, any>
             produto_valor_iss: parseSafeFloat(getXmlValue(issqnBlock.vISSQN)),
             produto_qtd: parseSafeFloat(getXmlValue(prod.qCom)),
             produto_valor_unit: parseSafeFloat(getXmlValue(prod.vUnCom)),
-            produto_valor_total: parseSafeFloat(getXmlValue(prod.vProd)),
+            produto_valor_total: parseSafeFloat(getXmlValue(prod.vProd)) || (parseSafeFloat(getXmlValue(prod.qCom)) * parseSafeFloat(getXmlValue(prod.vUnCom))),
         };
     });
 };

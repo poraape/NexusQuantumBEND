@@ -33,17 +33,16 @@ const App: React.FC = () => {
   } = useAgentOrchestrator();
 
   const handleStartAnalysis = useCallback(async (files: File[]) => {
-    logger.clear();
-    logger.log('App', 'INFO', `Iniciando nova análise com ${files.length} arquivo(s).`);
     await runPipeline(files);
   }, [runPipeline]);
 
   const resetApp = useCallback(() => {
     resetOrchestrator();
+    logger.clear();
     logger.log('App', 'INFO', 'Aplicativo resetado para uma nova análise.');
   }, [resetOrchestrator]);
 
-  const onAddFilesForChat = useCallback((files: File[]) => {
+  const onAddFilesForChat = useCallback((newFiles: File[]) => {
       if (isPipelineRunning) {
           const warning = 'Aguarde a conclusão da análise atual antes de adicionar novos arquivos.';
           logger.log('App', 'WARN', warning);
@@ -51,14 +50,14 @@ const App: React.FC = () => {
           return;
       }
 
-      if (!files.length) {
+      if (!newFiles.length) {
           return;
       }
 
-      logger.log('App', 'INFO', `Arquivos adicionais recebidos via chat: ${files.map(f => f.name).join(', ')}`);
+      logger.log('App', 'INFO', `Arquivos adicionais recebidos via chat: ${newFiles.map(f => f.name).join(', ')}`);
       setError('Iniciando nova análise com os arquivos adicionados...');
-      handleStartAnalysis(files);
-  }, [handleStartAnalysis, isPipelineRunning, setError]);
+      runPipeline(newFiles);
+  }, [runPipeline, isPipelineRunning, setError]);
   
   return (
     <div className="bg-gray-900 text-gray-200 min-h-screen font-sans">

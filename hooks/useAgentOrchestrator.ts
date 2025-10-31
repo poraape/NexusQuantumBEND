@@ -90,7 +90,7 @@ export const useAgentOrchestrator = () => {
     const [error, setError] = useState<string | null>(null);
     const [pipelineError, setPipelineError] = useState<boolean>(false);
     const [isPipelineComplete, setIsPipelineComplete] = useState(false);
-    const [classificationCorrections, setClassificationCorrections] = useState<Record<string, ClassificationResult['operationType']>>({});
+    const [allUploadedFiles, setAllUploadedFiles] = useState<File[]>([]);
     const [costCenterCorrections, setCostCenterCorrections] = useState<Record<string, string>>({});
 
     const chatSessionRef = useRef<Chat | null>(null);
@@ -117,19 +117,27 @@ export const useAgentOrchestrator = () => {
         setAuditReport(null);
         setMessages([]);
         setIsPipelineComplete(false);
+        setAllUploadedFiles([]);
     }, []);
 
-    const runPipeline = useCallback(async (files: File[]) => {
-        reset();
+    const runPipeline = useCallback(async (newFiles: File[]) => {
         logger.log('Orchestrator', 'INFO', 'Iniciando pipeline de análise.');
+
+        setPipelineError(false);
+        setIsPipelineComplete(false);
+        setAuditReport(null);
+        setMessages([]);
+
+        const currentFiles = [...allUploadedFiles, ...newFiles];
+        setAllUploadedFiles(currentFiles);
 
         // Frontend Pipeline (existing logic for all files)
         try {
-            setAgentStates(prev => ({ ...prev, ocr: { status: 'running', progress: { step: 'Analisando arquivos...', current: 0, total: files.length }}}));
-            const importedDocs = await importFiles(files, (current, total) => {
+            setAgentStates(prev => ({ ...prev, ocr: { status: 'running', progress: { step: 'Analisando arquivos...', current: 0, total: currentFiles.length }}}));
+            const importedDocs = await importFiles(currentFiles, (current, total) => {
                 setAgentStates(prev => ({...prev, ocr: { ...prev.ocr, progress: { step: `Processando arquivo ${current} de ${total}`, current, total }}}));
             });
-            setAgentStates(prev => ({...prev, ocr: { status: 'completed', progress: { step: `Arquivos importados`, current: files.length, total: files.length }}}));
+            setAgentStates(prev => ({...prev, ocr: { status: 'completed', progress: { step: `Arquivos importados`, current: currentFiles.length, total: currentFiles.length }}}));
             
             setAgentStates(prev => ({...prev, auditor: { status: 'running', progress: { step: `Executando ${importedDocs.length} auditorias...`, current: 0, total: 1 }}}));
             let partialReport: any = await runAudit(importedDocs);
@@ -174,7 +182,7 @@ export const useAgentOrchestrator = () => {
             setIsPipelineComplete(true);
             setAgentStates(initialAgentStates);
         }
-    }, [reset, classificationCorrections, costCenterCorrections]);
+    }, [allUploadedFiles, classificationCorrections, costCenterCorrections]);
 
     const runReconciliationPipeline = useCallback(async (bankFiles: File[]) => {
         if (!auditReport) {
