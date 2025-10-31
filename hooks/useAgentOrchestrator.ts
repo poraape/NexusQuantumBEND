@@ -90,6 +90,7 @@ export const useAgentOrchestrator = () => {
     const [error, setError] = useState<string | null>(null);
     const [pipelineError, setPipelineError] = useState<boolean>(false);
     const [isPipelineComplete, setIsPipelineComplete] = useState(false);
+    const [classificationCorrections, setClassificationCorrections] = useState<Record<string, ClassificationResult['operationType']>>({});
     const [allUploadedFiles, setAllUploadedFiles] = useState<File[]>([]);
     const [costCenterCorrections, setCostCenterCorrections] = useState<Record<string, string>>({});
 

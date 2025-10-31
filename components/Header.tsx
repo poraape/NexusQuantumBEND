@@ -1,13 +1,17 @@
 import React from 'react';
 import LogoIcon from './LogoIcon';
+import type { AuditReport, ChatMessage } from '../types';
+import { exportReportToHtml } from '../utils/exportReport';
 
 interface HeaderProps {
     onShowLogs: () => void;
     onReset: () => void;
     isAnalysisComplete: boolean;
+    auditReport: AuditReport | null;
+    messages: ChatMessage[];
 }
 
-const Header: React.FC<HeaderProps> = ({ onShowLogs, onReset, isAnalysisComplete }) => (
+const Header: React.FC<HeaderProps> = ({ onShowLogs, onReset, isAnalysisComplete, auditReport, messages }) => (
     <header className="bg-gray-900/50 backdrop-blur-sm p-4 flex justify-between items-center border-b border-gray-700/50 sticky top-0 z-30">
         <div className="flex items-center gap-3">
             <LogoIcon className="w-10 h-10" />
@@ -23,6 +27,14 @@ const Header: React.FC<HeaderProps> = ({ onShowLogs, onReset, isAnalysisComplete
              >
                 Ver Logs
              </button>
+             {isAnalysisComplete && auditReport && (
+                <button
+                    onClick={() => exportReportToHtml({ report: auditReport, messages })}
+                    className="text-xs bg-green-600 hover:bg-green-500 text-white font-semibold px-3 py-1.5 rounded-md transition-colors"
+                >
+                    Exportar Relatório
+                </button>
+             )}
              {isAnalysisComplete && (
                 <button
                     onClick={onReset}

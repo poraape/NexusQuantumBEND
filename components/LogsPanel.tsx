@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { logger, LogEntry } from '../services/logger';
+import { exportLogsToFile } from '../utils/exportLogs';
 
 const LogsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [logs, setLogs] = useState<LogEntry[]>([]);
@@ -32,6 +33,12 @@ const LogsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             onChange={(e) => setFilter(e.target.value)}
                             className="bg-gray-700 text-white rounded px-2 py-1 mr-4"
                         />
+                        <button
+                            onClick={() => exportLogsToFile(logs)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded-lg text-sm mr-2"
+                        >
+                            Exportar Logs
+                        </button>
                         <button onClick={onClose} className="text-white">Fechar</button>
                     </div>
                 </div>
