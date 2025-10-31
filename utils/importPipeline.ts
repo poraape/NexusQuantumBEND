@@ -347,6 +347,430 @@ const generalFallbackConfigs: ParsingConfig[] = [
 ];
 
 
+import type { ImportedDoc, BankTransaction, DataQualityMetrics, DataQualityColumnMetric } from '../types';
+import { runOCRFromImage } from '../agents/ocrExtractor';
+import { extractDataFromText } from '../agents/nlpAgent';
+import { logger } from '../services/logger';
+import { parseSafeFloat } from './parsingUtils';
+import dayjs from 'dayjs';
+
+import JSZip, { type JSZipObject } from 'jszip';
+import Papa from 'papaparse';
+
+// Set up PDF.js worker using assets empacotados localmente pelo bundler
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.mjs?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
+
+
+// --- Helper Functions ---
+
+const readFileAsBuffer = (file: File): Promise<ArrayBuffer> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(file);
+    });
+};
+
+const decodeBuffer = (buffer: ArrayArrayBuffer, encoding: string): string => {
+    const decoder = new TextDecoder(encoding, { fatal: true });
+    return decoder.decode(buffer);
+};
+
+const getFileExtension = (filename: string): string => {
+    return filename.slice(((filename.lastIndexOf('.') - 1) >>> 0) + 2).toLowerCase();
+};
+
+const sanitizeFilename = (filename: string): string => {
+    return filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+const getXmlValue = (field: any): any => {
+    if (field === null || field === undefined) return undefined;
+    if (typeof field === 'object') {
+        if (field['#text'] !== undefined) return field['#text'];
+        if (Object.keys(field).length === 0) return undefined;
+    }
+    return field;
+};
+
+const getInnerTaxBlock = (taxParent: any): any => {
+    if (!taxParent || typeof taxParent !== 'object') {
+        return {};
+    }
+    const keys = Object.keys(taxParent);
+    if (keys.length > 0) {
+        const innerKey = keys.find(k => typeof taxParent[k] === 'object' && taxParent[k] !== null);
+        if (innerKey) {
+            return taxParent[innerKey];
+        }
+    }
+    return {};
+};
+
+
+const normalizeNFeData = (nfeData: any, fallbackId: string): Record<string, any>[] => {
+    const infNFe = nfeData?.nfeProc?.NFe?.infNFe || nfeData?.NFe?.infNFe || nfeData?.infNFe;
+    if (!infNFe) {
+        logger.log('ImportPipeline', 'ERROR', 'Bloco <infNFe> não encontrado no XML. O documento não pode ser processado.');
+        return [];
+    }
+
+    const maskCnpj = (cnpj: string | undefined): string | undefined => {
+        if (!cnpj || cnpj.length < 14) return cnpj;
+        return `${cnpj.substring(0, 8)}****${cnpj.substring(12)}`;
+    };
+
+    const items = Array.isArray(infNFe.det) ? infNFe.det : (infNFe.det ? [infNFe.det] : []);
+    if (items.length === 0) {
+        logger.log('ImportPipeline', 'WARN', 'Nenhum item <det> encontrado no XML.');
+        return [];
+    }
+    
+    const ide = infNFe.ide || {};
+    const emit = infNFe.emit || {};
+    const dest = infNFe.dest || {};
+    const total = infNFe.total || {};
+    const icmsTot = total.ICMSTot || {};
+    const issqnTot = total.ISSQNtot || {};
+
+    const nfeId = getXmlValue(infNFe['@_Id']) || fallbackId;
+
+    if (parseSafeFloat(getXmlValue(issqnTot.vServ)) > 0 && !parseSafeFloat(getXmlValue(issqnTot.vISSQN))) {
+        logger.log('ImportPipeline', 'WARN', `vISSQN ausente na NFe ${nfeId}, mas vServ (${getXmlValue(issqnTot.vServ)}) > 0. Possível falha na extração de ISSQN.`);
+    }
+    
+    if (!infNFe['@_Id']) {
+        logger.log('ImportPipeline', 'WARN', `Atributo "Id" da NFe não foi encontrado. Usando fallback: "${fallbackId}".`);
+    }
+
+    let nfeTotalValue = parseSafeFloat(getXmlValue(icmsTot.vNF));
+    if (nfeTotalValue === 0) {
+        const totalProducts = parseSafeFloat(getXmlValue(icmsTot.vProd));
+        const totalServices = parseSafeFloat(getXmlValue(issqnTot.vServ));
+        nfeTotalValue = totalProducts + totalServices;
+        if (nfeTotalValue > 0) {
+            logger.log('ImportPipeline', 'WARN', `vNF ausente/zerado na NFe ${nfeId}. Total reconstruído: R$ ${nfeTotalValue}`);
+        }
+    }
+
+    return items.map((item: any) => {
+        const prod = item.prod || {};
+        const imposto = item.imposto || {};
+        const icmsBlock = getInnerTaxBlock(imposto.ICMS);
+        const pisBlock = getInnerTaxBlock(imposto.PIS);
+        const cofinsBlock = getInnerTaxBlock(imposto.COFINS);
+        const issqnBlock = getInnerTaxBlock(imposto.ISSQN);
+        const enderEmit = emit.enderEmit || {};
+        const enderDest = dest.enderDest || {};
+
+        return {
+            nfe_id: nfeId,
+            data_emissao: getXmlValue(ide.dhEmi),
+            valor_total_nfe: nfeTotalValue,
+            emitente_nome: getXmlValue(emit.xNome),
+            emitente_cnpj: maskCnpj(getXmlValue(emit.CNPJ)),
+            emitente_uf: getXmlValue(enderEmit.UF),
+            destinatario_nome: getXmlValue(dest.xNome),
+            destinatario_cnpj: maskCnpj(getXmlValue(dest.CNPJ)),
+            destinatario_uf: getXmlValue(enderDest.UF),
+            produto_nome: getXmlValue(prod.xProd),
+            produto_ncm: getXmlValue(prod.NCM),
+            produto_cfop: getXmlValue(prod.CFOP),
+            produto_cst_icms: getXmlValue(icmsBlock.CST),
+            produto_base_calculo_icms: parseSafeFloat(getXmlValue(icmsBlock.vBC)),
+            produto_aliquota_icms: parseSafeFloat(getXmlValue(icmsBlock.pICMS)),
+            produto_valor_icms: parseSafeFloat(getXmlValue(icmsBlock.vICMS)),
+            produto_cst_pis: getXmlValue(pisBlock.CST),
+            produto_valor_pis: parseSafeFloat(getXmlValue(pisBlock.vPIS)),
+            produto_cst_cofins: getXmlValue(cofinsBlock.CST),
+            produto_valor_cofins: parseSafeFloat(getXmlValue(cofinsBlock.vCOFINS)),
+            produto_valor_iss: parseSafeFloat(getXmlValue(issqnBlock.vISSQN)),
+            produto_qtd: parseSafeFloat(getXmlValue(prod.qCom)),
+            produto_valor_unit: parseSafeFloat(getXmlValue(prod.vUnCom)),
+            produto_valor_total: parseSafeFloat(getXmlValue(prod.vProd)) || (parseSafeFloat(getXmlValue(prod.qCom)) * parseSafeFloat(getXmlValue(prod.vUnCom))),
+        };
+    });
+};
+
+const inferColumnType = (columnValues: any[]): DataQualityColumnMetric['type'] => {
+    if (columnValues.every(val => val === null || val === undefined || val === '' || !isNaN(parseSafeFloat(val)))) {
+        return 'number';
+    }
+    if (columnValues.every(val => val === null || val === undefined || val === '' || dayjs(val, 'YYYY-MM-DD').isValid())) {
+        return 'date'; // Basic date format check
+    }
+    return 'string';
+};
+
+const normalizeHeadersToCanonical = (data: Record<string, any>[], file: { name: string }): { data: Record<string, any>[], dataQuality: DataQualityMetrics['columns'] } => {
+    if (!data || data.length === 0) return { data: [], dataQuality: {} };
+
+    // Massively expanded header mapping for robustness
+    const headerMapping: Record<string, string[]> = {
+        'nfe_id': ['chave de acesso', 'chave_de_acesso', 'chavedeacesso', 'chave', 'numeronf', 'numero da nf', 'nfe', 'chave nfe', 'série', 'sã©rie', 'numero nota fiscal'],
+        'data_emissao': ['data emissão', 'data_emissão', 'data de emissão', 'data_de_emissão', 'dataemissao', 'dtemissao', 'dh emi', 'dhemi'],
+        'valor_total_nfe': ['valor total da operação', 'valor_total_da_nfe', 'valor da nota', 'valor_da_nota', 'valortotalnota', 'vlr total nf', 'valor total nf-e', 'vnf', 'valor nota fiscal'],
+        'emitente_nome': ['razão social emitente', 'razao social emitente', 'razaosocialemitente', 'nome do emitente', 'nome_do_emitente', 'emitente', 'emitente - razão social'],
+        'emitente_cnpj': ['cpf/cnpj emitente', 'cnpj emitente', 'cnpj_emitente', 'cnpjemitente', 'cnpjemit', 'emitente - cnpj'],
+        'emitente_uf': ['uf emitente', 'uf_emitente', 'ufemitente', 'emitente - uf'],
+        'destinatario_nome': ['nome destinatário', 'nome_destinatário', 'nome do destinatario', 'nome_do_destinatario', 'destinatario', 'destinatário - nome/razão social'],
+        'destinatario_cnpj': ['cnpj destinatário', 'cnpj_destinatário', 'cnpj do destinatario', 'cnpj_do_destinatario', 'destinatário - cnpj/cpf'],
+        'destinatario_uf': ['uf destinatário', 'uf_destinatário', 'uf do destinatario', 'uf_do_destinatario', 'destinatário - uf'],
+        'produto_nome': ['descrição do produto/serviço', 'descrição do produto', 'descricaoproduto', 'nome do produto', 'nome_do_produto', 'produto', 'desc', 'descricao', 'descriã§ã£o do produto/serviã§o', 'descrição do produto/serviã§o', 'descricaoproduto'],
+        'produto_ncm': ['código ncm/sh', 'ncm/sh (tipo de produto)', 'ncm', 'codigo ncm'],
+        'produto_cfop': ['cfop'],
+        'produto_qtd': ['quantidade', 'qtd', 'qtde', 'qtd.', 'qcom'],
+        'produto_valor_unit': ['valor unitário', 'valor_unitário', 'valorunitario', 'vlr_unit', 'valor unitã¡rio', 'vuncom'],
+        'produto_valor_total': ['valor total', 'valortotal', 'valortotalitem', 'vlr_total', 'vprod'],
+        'produto_valor_icms': ['valor icms', 'valor_icms', 'icms', 'vlr_icms', 'valor do icms', 'valor_do_icms', 'vicms'],
+        'produto_valor_pis': ['valor pis', 'valor_pis', 'pis', 'vlr_pis', 'valor do pis', 'valor_do_pis', 'vpis'],
+        'produto_valor_cofins': ['valor cofins', 'valor_cofins', 'cofins', 'vlr_cofins', 'valor da cofins', 'valor_da_cofins', 'vcofins'],
+        'produto_valor_iss': ['valor iss', 'valor_iss', 'iss', 'vlr_iss', 'valor do iss', 'valor_do_iss', 'vissqn'],
+        'produto_cst_icms': ['cst icms', 'cst_icms', 'cst'],
+        'produto_base_calculo_icms': ['base de calculo icms', 'base_de_calculo_icms', 'bc icms', 'vbc'],
+        'produto_aliquota_icms': ['aliquota icms', 'aliquota_icms', 'aliq icms', 'picms'],
+        'produto_cst_pis': ['cst pis', 'cst_pis'],
+        'produto_cst_cofins': ['cst cofins', 'cst_cofins'],
+        'natureza_operacao': ['natureza da operação', 'natureza da operacao', 'natop', 'natureza da operaã§ã£o'],
+    };
+
+
+    const reverseMap = new Map<string, string>();
+    const originalHeaders: Record<string, string> = {}; // To store original header -> canonical header
+    for (const [canonical, variations] of Object.entries(headerMapping)) {
+        for (const variation of variations) {
+            reverseMap.set(variation, canonical);
+            // Also map simplified versions without accents or special chars
+            const simplifiedVariation = variation
+                .normalize("NFD").replace(/[̀-ͯ]/g, "") // remove accents
+                .replace(/[^a-z0-9]/gi, ''); // remove non-alphanumeric
+            if (simplifiedVariation !== variation) {
+                reverseMap.set(simplifiedVariation, canonical);
+            }
+        }
+    }
+    
+    const mappedData = data.map(row => {
+        const normalizedRow: Record<string, any> = {};
+        for (const [key, value] of Object.entries(row)) {
+             // Skip 'Unnamed' columns generated by some parsers
+            if (key.toLowerCase().startsWith('unnamed') || key.length === 0) {
+                continue;
+            }
+             const simplifiedKey = key
+                .normalize("NFD").replace(/[̀-ͯ]/g, "")
+                .toLowerCase()
+                .replace(/[^a-z0-9]/gi, '');
+             const canonicalKey = reverseMap.get(key.toLowerCase().trim()) || reverseMap.get(simplifiedKey);
+            if (canonicalKey) {
+                normalizedRow[canonicalKey] = value;
+                originalHeaders[key] = canonicalKey; // Store the mapping
+            } else {
+                normalizedRow[key] = value; // Keep original if no mapping found
+                originalHeaders[key] = key; // Keep original if no canonical mapping
+            }
+        }
+        return normalizedRow;
+    });
+
+    const dataQuality: DataQualityMetrics['columns'] = {};
+    const actualHeaders = Object.keys(mappedData[0] || {});
+    const totalRows = mappedData.length;
+
+    // --- Type Inference & Completeness ---
+    actualHeaders.forEach(header => {
+        const columnValues = mappedData.map(row => row[header]);
+        let nonNullCount = 0;
+        const uniqueValues = new Set<any>();
+        const numericValues: number[] = [];
+
+        columnValues.forEach(val => {
+            if (val !== null && val !== undefined && String(val).trim() !== '') {
+                nonNullCount++;
+                uniqueValues.add(val);
+                const numVal = parseSafeFloat(val);
+                if (!isNaN(numVal)) {
+                    numericValues.push(numVal);
+                }
+            }
+        });
+
+        const completeness = totalRows > 0 ? (nonNullCount / totalRows) * 100 : 0;
+        const inferredType = inferColumnType(columnValues);
+
+        dataQuality[header] = {
+            completeness: parseFloat(completeness.toFixed(2)),
+            type: inferredType,
+            uniqueValues: uniqueValues.size,
+        };
+
+        if (inferredType === 'number' && numericValues.length > 0) {
+            const min = Math.min(...numericValues);
+            const max = Math.max(...numericValues);
+            const sum = numericValues.reduce((a, b) => a + b, 0);
+            const avg = sum / numericValues.length;
+
+            // Simple std dev (sample standard deviation)
+            const stdDev = numericValues.length > 1 
+                ? Math.sqrt(numericValues.map(x => Math.pow(x - avg, 2)).reduce((a, b) => a + b) / (numericValues.length - 1))
+                : 0;
+
+            dataQuality[header].min = parseFloat(min.toFixed(2));
+            dataQuality[header].max = parseFloat(max.toFixed(2));
+            dataQuality[header].avg = parseFloat(avg.toFixed(2));
+            dataQuality[header].stdDev = parseFloat(stdDev.toFixed(2));
+        }
+    });
+
+    // --- Duplicate Column Detection (by content) ---
+    const columnsContent: Record<string, string[]> = {};
+    actualHeaders.forEach(header => {
+        columnsContent[header] = mappedData.map(row => String(row[header] || '').trim());
+    });
+
+    const uniqueColumnContents = new Map<string, string>(); // contentHash -> headerName
+    actualHeaders.forEach(header => {
+        const contentHash = JSON.stringify(columnsContent[header]); // Simple hash by content
+        if (uniqueColumnContents.has(contentHash) && uniqueColumnContents.get(contentHash) !== header) {
+            logger.log('ImportPipeline', 'WARN', `Coluna duplicada detectada em ${file.name}: '${header}' é idêntica a '${uniqueColumnContents.get(contentHash)}'.`);
+        } else {
+            uniqueColumnContents.set(contentHash, header);
+        }
+    });
+
+    // --- NFE ID fallback logic ---
+    const hasNfeIdColumn = mappedData.length > 0 && mappedData[0].hasOwnProperty('nfe_id');
+    const hasValidNfeIdValues = hasNfeIdColumn && mappedData.some(row => row.nfe_id && String(row.nfe_id).trim() !== '');
+    const hasFiscalData = mappedData.some(row => row.produto_valor_total || row.valor_total_nfe || row.produto_cfop);
+    
+    if (!hasValidNfeIdValues && hasFiscalData) {
+        if (hasNfeIdColumn) {
+            logger.log('ImportPipeline', 'WARN', `A coluna 'nfe_id' foi encontrada em ${file.name}, mas não contém valores válidos. Usando o nome do arquivo como ID de fallback.`);
+        } else {
+            logger.log('ImportPipeline', 'WARN', `A coluna 'nfe_id' (ou variações) não foi encontrada em ${file.name}. Usando o nome do arquivo como ID de fallback.`);
+        }
+        
+        mappedData.forEach(row => {
+            row.nfe_id = file.name; // Apply fallback directly to mappedData
+        });
+    }
+    
+    return { data: mappedData, dataQuality };
+};
+
+const handleXML = async (file: File): Promise<ImportedDoc> => {
+    try {
+        const { XMLParser } = await import('fast-xml-parser');
+        const buffer = await readFileAsBuffer(file);
+        const text = new TextDecoder('utf-8').decode(buffer);
+        
+        const parser = new XMLParser({
+            ignoreAttributes: false,
+            attributeNamePrefix: "@_",
+            textNodeName: "#text", 
+            allowBooleanAttributes: true,
+            parseTagValue: false, 
+            parseAttributeValue: false,
+        });
+        const jsonObj = parser.parse(text);
+        const data = normalizeNFeData(jsonObj, file.name);
+
+        if (data.length === 0) {
+            return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'error', error: 'Nenhum item de produto encontrado no XML ou XML malformado.', raw: file };
+        }
+        // For XML, data quality is primarily handled by the structure itself and validation against XSDs (if applicable)
+        // For now, we'll pass an empty object for dataQuality
+        return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'parsed', data, dataQuality: {}, raw: file };
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.log('ImportPipeline', 'ERROR', `Erro crítico ao processar XML: ${file.name}`, { error });
+        return { kind: 'NFE_XML', name: file.name, size: file.size, status: 'error', error: `Erro ao processar XML: ${message}`, raw: file };
+    }
+};
+
+interface ValidationResult {
+    isValid: boolean;
+    dataQualityMetrics: DataQualityMetrics;
+}
+
+const validateParsedData = (data: Record<string, any>[], config: ParsingConfig, dataQualityColumns: DataQualityMetrics['columns']): ValidationResult => {
+    if (!data || data.length === 0) {
+        logger.log('ImportPipeline', 'REJECT', `Config ${JSON.stringify(config)} rejeitada: Nenhum dado encontrado.`);
+        return { isValid: false, dataQualityMetrics: { totalRows: 0, columns: dataQualityColumns, overallStatus: 'UNAVAILABLE' } };
+    }
+
+    const numericFields = [
+        'produto_valor_total', 'valor_total_nfe', 'produto_qtd', 'produto_valor_unit',
+        'produto_valor_icms', 'produto_valor_pis', 'produto_valor_cofins', 'produto_valor_iss',
+        'produto_base_calculo_icms'
+    ];
+
+    const headers = Object.keys(data[0]);
+    const canonicalNumericHeadersFound = headers.filter(header => numericFields.includes(header));
+
+    let nValidosInNumericFields = 0;
+    canonicalNumericHeadersFound.forEach(field => {
+        const columnMetric = dataQualityColumns[field];
+        if (columnMetric && columnMetric.type === 'number') {
+            nValidosInNumericFields += columnMetric.nonNullCount || 0; // Use actual count from dataQuality
+        }
+    });
+    
+    const K = Math.max(3, Math.floor(data.length * 0.01)); // At least 3 valid numeric values
+    const hasEnoughNumericData = nValidosInNumericFields >= K;
+
+    // Determine overall data quality status
+    let overallStatus: DataQualityMetrics['overallStatus'] = 'OK';
+    let overallExplanation: string = 'Dados processados com boa qualidade.';
+
+    if (!hasEnoughNumericData) {
+        overallStatus = 'ALERT';
+        overallExplanation = `Número insuficiente de valores numéricos válidos (${nValidosInNumericFields} de ${K} necessários) para uma análise fiscal robusta.`;
+    }
+
+    // Check for critical completeness issues in key fields
+    const criticalFields = ['nfe_id', 'data_emissao', 'valor_total_nfe', 'emitente_cnpj', 'destinatario_cnpj'];
+    for (const field of criticalFields) {
+        if (dataQualityColumns[field] && dataQualityColumns[field].completeness < 70) { // If less than 70% complete
+            overallStatus = 'ALERT';
+            overallExplanation += ` Baixa completude (${dataQualityColumns[field].completeness.toFixed(2)}%) na coluna crucial '${field}'.`;
+        }
+    }
+
+    const dataQualityMetrics: DataQualityMetrics = {
+        totalRows: data.length,
+        columns: dataQualityColumns,
+        overallStatus,
+        overallExplanation,
+    };
+
+    logger.log('ImportPipeline', 'INFO', 'Estatísticas de validação de dados.', {
+        config,
+        dataQualityMetrics,
+    });
+
+    return { isValid: hasEnoughNumericData, dataQualityMetrics };
+};
+
+type ParsingConfig = {
+    encoding: string;
+    delimiter: string;
+    preProcess?: (text: string) => string;
+};
+
+const contextualParsingProfiles: { context: string; filePattern: RegExp; config: ParsingConfig }[] = [
+    { context: '202401_NFs', filePattern: /202401_NFs/i, config: { encoding: 'utf-8', delimiter: ',' } },
+    { context: 'Codificados-Notas', filePattern: /notas_utf8\.csv/i, config: { encoding: 'utf-8', delimiter: ';' } },
+    { context: 'Codificados-Itens', filePattern: /itens_iso8859_1\.csv/i, config: { encoding: 'iso-8859-1', delimiter: ';' } },
+    // Regex for nf_dataset/notas.csv and nf_dataset/itens.csv specifically
+    { context: 'NFDataset', filePattern: /^(notas|itens)\.csv$/i, config: { encoding: 'utf-8', delimiter: '|', preProcess: (text: string) => text.replace(/;;/g, '|') } },
+];
+
+
 const handleCSV = async (file: File): Promise<ImportedDoc> => {
     const buffer = await readFileAsBuffer(file);
     
