@@ -61,6 +61,7 @@ export async function generateJSON<T = any>(
                 config: {
                     responseMimeType: 'application/json',
                     responseSchema: schema as any, // Cast to any to satisfy the SDK's broader type
+                    maxOutputTokens: 8192,
                 },
             });
             
@@ -130,6 +131,7 @@ export function createChatSession(
             systemInstruction,
             responseMimeType: 'application/json',
             responseSchema: schema as any, // Cast to any to satisfy the SDK's broader type
+            maxOutputTokens: 8192,
         },
     });
 }
